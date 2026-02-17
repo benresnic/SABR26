@@ -1,14 +1,3 @@
-# SABR26
-
-## Ben
-
-## Carter
-
-## Zach
-
-## Ameer
-
-## Andrew
-
+## 2026 Diamond Dollars Mock Case Competition
 
 
