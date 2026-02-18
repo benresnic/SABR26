@@ -164,6 +164,7 @@ def read_pbp_year(year: int, data_dir: str = "Data") -> pd.DataFrame:
     return pd.read_parquet(in_path)
 
 
+
 def scrape_and_save_statcast_pbp_years(
     start_year: int = 2021,
     end_year: int = 2025,
@@ -208,6 +209,5 @@ if __name__ == "__main__":
     scrape_and_save_statcast_pbp_years(start_year=2021, end_year=2025, data_dir="Data")
     apply_names_to_saved_pbp(data_dir="Data")
     print(pl.from_pandas(df).filter(pl.col("PVC") == 1).select(pl.col("batter_name")).unique().to_series().to_list())
-
 
 
