@@ -221,34 +221,58 @@ ggplot(all_clustered, aes(x = K_pct, y = HR_pct,
   geom_point(alpha = 0.75) +
   geom_text_repel(aes(label = Name), size = 2.3, max.overlaps = 15,
                   show.legend = FALSE) +
+  scale_color_manual(values = cluster_colors) +
   scale_size_continuous(range = c(2, 6), name = "Contact %") +
   labs(
-    title    = "Hitter Archetypes — 7-Cluster K-Means + Power-Variance Cohort (2025)",
-    subtitle = sprintf("n = %d total players, min 5 PA", nrow(all_clustered)),
-    x = "K%", y = "HR% (HR/PA)"
+    title    = "Hitter Archetypes: K-Means Clusters (Inc. Power-Variance Cohort, 2025)",
+    subtitle = sprintf("%d total players, min 5 PA", nrow(all_clustered)),
+    x        = "K%",
+    y        = "HR% (HR/PA)"
   ) +
   theme_minimal(base_size = 13) +
-  theme(legend.position = "right")
+  theme(
+    axis.title.y      = element_text(face = "bold", size = 14),
+    axis.title.x      = element_text(face = "bold", size = 14),
+    plot.title        = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle     = element_text(hjust = 0.5),
+    legend.position   = "right",
+    legend.title      = element_text(face = "bold"),
+    legend.background = element_rect(fill = "lightyellow", color = "black", linewidth = 0.5)
+  )
+
+ggsave("clusters_scattered.png", width = 10, height = 6, dpi = 300)
 
 
 # 13.) Faceted by Contact tier
 all_clustered <- all_clustered %>%
   mutate(Contact_bin = cut(Contact_pct,
                            breaks = quantile(Contact_pct, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
-                           labels = c("Low Contact (Bottom 33%)", "Mid Contact", "High Contact (Top 33%)"),
+                           labels = c("Below Avg. Contact (Bottom 33%)", "Avg. Contact", "Above Avg. Contact (Top 33%)"),
                            include.lowest = TRUE))
 
 ggplot(all_clustered, aes(x = K_pct, y = HR_pct, color = Archetype)) +
   geom_point(size = 2.8, alpha = 0.85) +
   geom_text_repel(aes(label = Name), size = 2, max.overlaps = 10,
                   show.legend = FALSE) +
+  scale_color_manual(values = cluster_colors) +
   facet_wrap(~ Contact_bin) +
   labs(
-    title = "Clusters Faceted by Contact % Tier",
+    title    = "Clusters Faceted by Contact % Tier",
     subtitle = "Tertile splits — shows separation across all 3 dimensions",
-    x = "K%", y = "HR% (HR/PA)"
+    x        = "K%",
+    y        = "HR% (HR/PA)"
   ) +
-  theme_minimal(base_size = 12)
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.title.y      = element_text(face = "bold", size = 14),
+    axis.title.x      = element_text(face = "bold", size = 14),
+    plot.title        = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle     = element_text(hjust = 0.5),
+    legend.title      = element_text(face = "bold"),
+    legend.background = element_rect(fill = "lightyellow", color = "black", linewidth = 0.5)
+  )
+
+ggsave("clusters_by_contact_tier.png", width = 10, height = 6, dpi = 300)
 
 
 # 14.) Write csv
