@@ -54,7 +54,7 @@ BASE_STATE_CHOICES <- c(
   "Bases Loaded" = 7
 )
 
-BASE_STATE_NAMES <- c("empty", "1B", "2B", "1B_2B", "3B", "1B_3B", "2B_3B", "loaded")
+BASE_STATE_NAMES <- c("Empty", "1st", "2nd", "1st & 2nd", "3rd", "1st & 3rd", "2nd & 3rd", "Loaded")
 
 # Count choices
 COUNT_CHOICES <- c(
@@ -154,8 +154,8 @@ plot_wp_diff_heatmap <- function(player_name, p_count, p_outs, p_base_state,
     "State: ", p_count, " count, ", p_outs, " out, ", base_name, ", ",
     ifelse(p_inning_topbot == "Top", "Top", "Bot"), " ", p_inning, ", ",
     score_label, "\n",
-    "WP before PA: ", sprintf("%.3f", wp_before),
-    " | Baseline WP after: ", sprintf("%.3f", baseline_wp_after),
+    "WP before PA: ", sprintf("%.1f%%", wp_before * 100),
+    " | Baseline WP after: ", sprintf("%.1f%%", baseline_wp_after * 100),
     " | Pitcher: ", p_pitcher_xfip_percentile, "th pct xFIP (", quality_label, ")"
   )
 

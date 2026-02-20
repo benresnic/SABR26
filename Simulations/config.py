@@ -5,6 +5,7 @@ Constants and configuration for the PVC simulation framework.
 """
 
 from pathlib import Path
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -88,3 +89,22 @@ DEFAULT_YEARS = [2023, 2024, 2025]
 
 # Years for WP lookup (more historical data for stability)
 WP_LOOKUP_YEARS = [2021, 2022, 2023, 2024, 2025]
+
+# ---------------------------------------------------------------------------
+# Feasibility Masking
+# ---------------------------------------------------------------------------
+
+# Fallback covariance matrix for players with <30 swings
+# Computed from 791,927 swings across 865 batters (2023-2025)
+# [[var_bat_speed, cov], [cov, var_swing_length]]
+POPULATION_COV_MATRIX = np.array([
+    [83.7, 4.86],
+    [4.86, 0.91]
+])
+
+# Minimum swings required for player-specific covariance
+MIN_SWINGS_FOR_PLAYER_COV = 30
+
+# Mask out grid cells below this fraction of max bivariate normal density
+# threshold = 0.25 means feasible if within region containing 75% of swings
+FEASIBILITY_THRESHOLD = 0.25

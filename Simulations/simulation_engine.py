@@ -32,6 +32,9 @@ from .config import (
     OUTCOMES,
     N_POSTERIOR_SAMPLES,
     BASE_STATE_NAMES,
+    POPULATION_COV_MATRIX,
+    MIN_SWINGS_FOR_PLAYER_COV,
+    FEASIBILITY_THRESHOLD,
 )
 from .win_probability import build_wp_lookup, lookup_wp
 from .runner_advancement import build_transition_tables, get_transitions, load_transition_tables
@@ -108,12 +111,120 @@ def get_player_stats(player_id: int, season: int = 2025) -> Dict:
         "player_id": player_id,
         "player_name": row["PlayerName"],
         "season": season,
-        "bat_speed": float(player_swings["bat_speed"].mean()),
-        "swing_length": float(player_swings["swing_length"].mean()),
+        "bat_speed": float(player_swings["bat_speed"].median()),
+        "swing_length": float(player_swings["swing_length"].median()),
         "z_contact": float(row["Z-Contact_pct"]),
         "xiso": float(row["xISO"]),
         "o_swing": float(row["O-Swing_pct"]),
     }
+
+
+def get_player_covariance(player_id: int, season: int = 2025) -> np.ndarray:
+    """
+    Compute within-player covariance matrix from their swing data.
+
+    Uses only swings within 95% CI to filter out bunts/check swings.
+
+    Parameters
+    ----------
+    player_id : int
+        MLB AM ID
+    season : int
+        Season to get swing data for
+
+    Returns
+    -------
+    np.ndarray
+        2x2 covariance matrix [[var_bs, cov], [cov, var_sl]].
+        Falls back to population average if player has <30 swings.
+    """
+    pbp = pd.read_parquet(DATA_DIR / f"pbp_{season}.parquet")
+    pbp = pbp[pbp["bat_speed"].notna() & pbp["swing_length"].notna()]
+    player_swings = pbp[pbp["batter"] == player_id]
+
+    if len(player_swings) < MIN_SWINGS_FOR_PLAYER_COV:
+        return POPULATION_COV_MATRIX.copy()
+
+    # Convert to float64 to handle pandas nullable Float64 dtype
+    bs = player_swings["bat_speed"].to_numpy(dtype=np.float64)
+    sl = player_swings["swing_length"].to_numpy(dtype=np.float64)
+
+    # Filter to 95% CI to exclude bunts/check swings
+    bs_lo, bs_hi = np.percentile(bs, [2.5, 97.5])
+    sl_lo, sl_hi = np.percentile(sl, [2.5, 97.5])
+    ci_mask = (bs >= bs_lo) & (bs <= bs_hi) & (sl >= sl_lo) & (sl <= sl_hi)
+    bs_ci, sl_ci = bs[ci_mask], sl[ci_mask]
+
+    if len(bs_ci) < MIN_SWINGS_FOR_PLAYER_COV:
+        return POPULATION_COV_MATRIX.copy()
+
+    # Compute covariance matrix from filtered swing data
+    cov_result = np.cov(bs_ci, sl_ci)
+
+    # Ensure we have a 2x2 matrix
+    if cov_result.ndim == 0 or cov_result.shape != (2, 2):
+        return POPULATION_COV_MATRIX.copy()
+
+    return cov_result
+
+
+def get_feasible_grid_mask(
+    bs_changes: List[float],
+    sl_changes: List[float],
+    cov_matrix: np.ndarray,
+    threshold: float = FEASIBILITY_THRESHOLD,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute feasibility mask for grid cells based on bivariate normal density.
+
+    Parameters
+    ----------
+    bs_changes : list
+        Absolute changes in bat speed (mph)
+    sl_changes : list
+        Absolute changes in swing length (feet)
+    cov_matrix : np.ndarray
+        2x2 covariance matrix [[var_bs, cov], [cov, var_sl]]
+    threshold : float
+        Minimum density (as fraction of max) to consider feasible
+
+    Returns
+    -------
+    tuple
+        (mask, densities) where:
+        - mask: boolean (n_bs, n_sl), True = feasible
+        - densities: float (n_bs, n_sl), bivariate normal PDF values
+    """
+    n_bs = len(bs_changes)
+    n_sl = len(sl_changes)
+
+    # Compute bivariate normal density at each grid point
+    # Mean is (0, 0) since we're measuring changes from baseline
+    densities = np.zeros((n_bs, n_sl))
+
+    # Inverse of covariance matrix for Mahalanobis distance
+    cov_inv = np.linalg.inv(cov_matrix)
+    cov_det = np.linalg.det(cov_matrix)
+    norm_const = 1.0 / (2 * np.pi * np.sqrt(cov_det))
+
+    for i, bs_change in enumerate(bs_changes):
+        for j, sl_change in enumerate(sl_changes):
+            x = np.array([bs_change, sl_change])
+            # Mahalanobis distance squared
+            mahal_sq = x @ cov_inv @ x
+            densities[i, j] = norm_const * np.exp(-0.5 * mahal_sq)
+
+    # Normalize relative to maximum (at origin 0,0)
+    max_density = densities.max()
+    if max_density > 0:
+        relative_densities = densities / max_density
+    else:
+        relative_densities = densities
+
+    # Create mask: True if density >= threshold * max_density
+    mask = relative_densities >= threshold
+
+    return mask, densities
 
 
 def compute_xfip_percentiles(years: List[int] = None) -> Dict[int, float]:
@@ -389,6 +500,23 @@ def simulate_player(
     if verbose:
         print(f"  {player_name}: BS={baseline_bat_speed:.1f}, SL={baseline_swing_length:.2f}")
 
+    # Compute player-specific feasibility mask
+    player_cov = get_player_covariance(player_id)
+    bs_changes_abs = [baseline_bat_speed * pct for pct in BAT_SPEED_CHANGES]
+    sl_changes_abs = [baseline_swing_length * pct for pct in SWING_LENGTH_CHANGES]
+    feasibility_mask, feasibility_densities = get_feasible_grid_mask(
+        bs_changes_abs, sl_changes_abs, player_cov
+    )
+
+    # Extract player swing stats for output
+    player_bs_std = np.sqrt(player_cov[0, 0])
+    player_sl_std = np.sqrt(player_cov[1, 1])
+    player_bs_sl_corr = player_cov[0, 1] / (player_bs_std * player_sl_std)
+
+    n_feasible = feasibility_mask.sum()
+    if verbose:
+        print(f"    Feasibility: {n_feasible}/25 cells (corr={player_bs_sl_corr:.2f})")
+
     results = []
     n_states = len(states_df)
 
@@ -442,8 +570,11 @@ def simulate_player(
         baseline_wp_after_pa[xfip_pct] = wp_after_list
 
     # Now iterate through all approach changes
-    for bs_pct in BAT_SPEED_CHANGES:
-        for sl_pct in SWING_LENGTH_CHANGES:
+    for bs_idx, bs_pct in enumerate(BAT_SPEED_CHANGES):
+        for sl_idx, sl_pct in enumerate(SWING_LENGTH_CHANGES):
+            feasibility_density = feasibility_densities[bs_idx, sl_idx]
+            is_feasible = int(feasibility_mask[bs_idx, sl_idx])
+
             # Compute adjusted stats using update_stat
             bs_change = baseline_bat_speed * bs_pct
             sl_change = baseline_swing_length * sl_pct
@@ -490,11 +621,11 @@ def simulate_player(
                     )
 
                 # Compute delta WP for each state
-                for i in range(n_states):
-                    row = states_df.iloc[i]
+                for state_idx in range(n_states):
+                    row = states_df.iloc[state_idx]
 
-                    wp_before = wp_before_pa_list[i]
-                    baseline_wp_after = baseline_wp_after_pa[xfip_pct][i]
+                    wp_before = wp_before_pa_list[state_idx]
+                    baseline_wp_after = baseline_wp_after_pa[xfip_pct][state_idx]
 
                     if bs_pct == 0.0 and sl_pct == 0.0:
                         # Baseline approach - adjusted equals baseline
@@ -502,7 +633,7 @@ def simulate_player(
                     else:
                         # Compute adjusted expected WP after PA
                         _, adjusted_wp_after, _ = compute_expected_delta_wp(
-                            outcome_probs=outcome_probs[i],
+                            outcome_probs=outcome_probs[state_idx],
                             outs=int(row["outs"]),
                             base_state=int(row["base_state"]),
                             inning=int(row["inning"]),
@@ -542,13 +673,18 @@ def simulate_player(
                         "baseline_wp_after_pa": baseline_wp_after,
                         "adjusted_wp_after_pa": adjusted_wp_after,
                         "wp_diff_from_baseline": wp_diff_from_baseline,
-                        "prob_K": outcome_probs[i, 0],
-                        "prob_BB_HBP": outcome_probs[i, 1],
-                        "prob_field_out": outcome_probs[i, 2],
-                        "prob_1B": outcome_probs[i, 3],
-                        "prob_2B": outcome_probs[i, 4],
-                        "prob_3B": outcome_probs[i, 5],
-                        "prob_HR": outcome_probs[i, 6],
+                        "feasibility_density": feasibility_density,
+                        "is_feasible": is_feasible,
+                        "player_bs_std": player_bs_std,
+                        "player_sl_std": player_sl_std,
+                        "player_bs_sl_corr": player_bs_sl_corr,
+                        "prob_K": outcome_probs[state_idx, 0],
+                        "prob_BB_HBP": outcome_probs[state_idx, 1],
+                        "prob_field_out": outcome_probs[state_idx, 2],
+                        "prob_1B": outcome_probs[state_idx, 3],
+                        "prob_2B": outcome_probs[state_idx, 4],
+                        "prob_3B": outcome_probs[state_idx, 5],
+                        "prob_HR": outcome_probs[state_idx, 6],
                     })
 
     return pd.DataFrame(results)
