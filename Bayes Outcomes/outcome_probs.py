@@ -196,8 +196,8 @@ def build_model(data):
 
 def fit_model(
     model,
-    draws=1000,
-    tune=500,
+    draws=2000,
+    tune=1000,
     target_accept=0.99,
     chains=4,
     cores=4,
@@ -376,6 +376,6 @@ if __name__ == "__main__":
     with open("Bayes Outcomes/scalers.json", "w") as f:
         json.dump(data["scalers"], f)
     model = build_model(data)
-    idata = fit_model(model, draws=750, tune=250,nuts_sampler="numpyro")
+    idata = fit_model(model, draws=2000, tune=1000,nuts_sampler="numpyro")
     az.to_netcdf(idata, "Bayes Outcomes/bayes_outcome_model.nc")
 

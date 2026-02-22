@@ -1,18 +1,19 @@
 """
 update_stats.py
 
-Predicts how changes in bat speed and swing length affect zone contact rate and xISO.
+Joint distribution model that maps (bat_speed, swing_length) → (z_contact, xISO).
+Both inputs and outputs are modeled together using multi-output Ridge regression,
+capturing correlations between the outputs.
 
 Example:
     python "Bayes Outcomes/update_stats.py" \
-        --bat-speed 77 --swing-length 7.5 \
-        --current-stat 0.79 --stat-type z_contact \
-        --bs-change -4 --sl-change -0.3
+        --bat-speed 75 --swing-length 7.2 \
+        --current-z-contact 0.82 --current-xiso 0.180 \
+        --bs-change -3 --sl-change -0.2
 """
 
 import argparse
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -48,9 +49,9 @@ STAT_BOUNDS = {
 def _build_training_data() -> pd.DataFrame:
     """
     Load PBP data, filter to swings, aggregate bat speed and swing length
-    to batter-season means, and join with batter stats.
+    to batter-season medians, and join with batter stats.
 
-    Returns DataFrame with: mean_bat_speed, mean_swing_length, Z-Contact_pct, xISO
+    Returns DataFrame with: median_bat_speed, median_swing_length, Z-Contact_pct, xISO
     """
     # Load PBP files for 2023-2025
     pbp_files = [DATA_DIR / f"pbp_{year}.parquet" for year in [2023, 2024, 2025]]
@@ -67,17 +68,17 @@ def _build_training_data() -> pd.DataFrame:
     # Filter to rows where bat_speed is not null (swings only)
     pbp = pbp[pbp["bat_speed"].notna()].copy()
 
-    # Aggregate to batter-season means
+    # Aggregate to batter-season medians
     swing_stats = (
         pbp.groupby(["batter", "game_year"])
         .agg({
-            "bat_speed": "mean",
-            "swing_length": "mean",
+            "bat_speed": "median",
+            "swing_length": "median",
         })
         .reset_index()
         .rename(columns={
-            "bat_speed": "mean_bat_speed",
-            "swing_length": "mean_swing_length",
+            "bat_speed": "median_bat_speed",
+            "swing_length": "median_swing_length",
         })
     )
 
@@ -98,7 +99,7 @@ def _build_training_data() -> pd.DataFrame:
     )
 
     # Drop rows with any nulls in the columns we need
-    cols_needed = ["mean_bat_speed", "mean_swing_length", "Z-Contact_pct", "xISO"]
+    cols_needed = ["median_bat_speed", "median_swing_length", "Z-Contact_pct", "xISO"]
     merged = merged.dropna(subset=cols_needed)
 
     return merged[cols_needed].reset_index(drop=True)
@@ -108,27 +109,46 @@ def _build_training_data() -> pd.DataFrame:
 # Model fitting
 # ---------------------------------------------------------------------------
 
-def _fit_models() -> dict:
+def _fit_joint_model() -> dict:
     """
-    Fit two Ridge regressions with polynomial features:
-    - Z-Contact_pct ~ bs + sl + bs² + sl² + bs×sl
-    - xISO ~ bs + sl + bs² + sl² + bs×sl
+    Fit a single multi-output Ridge regression:
+    X: polynomial features of (bat_speed, swing_length)
+    Y: (z_contact, xiso) - 2 columns
 
-    Uses standardized inputs and Ridge regularization (alpha=0.01) to handle
-    collinearity between bat speed and swing length.
-
-    Returns coefficients dictionary.
+    Returns coefficients dict with:
+    - scaler params
+    - feature names
+    - intercept (2 values)
+    - coefficients (2 x n_features matrix)
+    - r_squared for each output
     """
     df = _build_training_data()
 
     # Standardize inputs (required for Ridge)
     scaler = StandardScaler()
-    X_raw = df[["mean_bat_speed", "mean_swing_length"]].values
+    X_raw = df[["median_bat_speed", "median_swing_length"]].values
     X_scaled = scaler.fit_transform(X_raw)
 
     # Create polynomial features: [bs, sl, bs², sl², bs×sl]
     poly = PolynomialFeatures(degree=2, include_bias=False)
     X_poly = poly.fit_transform(X_scaled)
+
+    # Create multi-output Y: (z_contact, xiso)
+    Y = df[["Z-Contact_pct", "xISO"]].values
+
+    # Fit multi-output Ridge regression
+    model = Ridge(alpha=0.01)
+    model.fit(X_poly, Y)
+
+    # Calculate R² for each output
+    Y_pred = model.predict(X_poly)
+    ss_res = np.sum((Y - Y_pred) ** 2, axis=0)
+    ss_tot = np.sum((Y - Y.mean(axis=0)) ** 2, axis=0)
+    r_squared = 1 - ss_res / ss_tot
+
+    # Calculate output correlation (residual covariance)
+    residuals = Y - Y_pred
+    output_cov = np.cov(residuals.T)
 
     results = {
         "scaler_mean": scaler.mean_.tolist(),
@@ -136,32 +156,32 @@ def _fit_models() -> dict:
         "feature_names": poly.get_feature_names_out().tolist(),
         "training_stats": {
             "n_observations": len(df),
-            "bat_speed_mean": float(df["mean_bat_speed"].mean()),
-            "bat_speed_std": float(df["mean_bat_speed"].std()),
-            "swing_length_mean": float(df["mean_swing_length"].mean()),
-            "swing_length_std": float(df["mean_swing_length"].std()),
+            "bat_speed_mean": float(df["median_bat_speed"].mean()),
+            "bat_speed_std": float(df["median_bat_speed"].std()),
+            "swing_length_mean": float(df["median_swing_length"].mean()),
+            "swing_length_std": float(df["median_swing_length"].std()),
+            "z_contact_mean": float(df["Z-Contact_pct"].mean()),
+            "z_contact_std": float(df["Z-Contact_pct"].std()),
+            "xiso_mean": float(df["xISO"].mean()),
+            "xiso_std": float(df["xISO"].std()),
+            "input_correlation": float(np.corrcoef(
+                df["median_bat_speed"], df["median_swing_length"]
+            )[0, 1]),
+            "output_correlation": float(np.corrcoef(
+                df["Z-Contact_pct"], df["xISO"]
+            )[0, 1]),
         },
         "fit_date": datetime.now().isoformat(),
-    }
-
-    # Fit Z-Contact model
-    y_zc = df["Z-Contact_pct"].values
-    model_zc = Ridge(alpha=0.01)
-    model_zc.fit(X_poly, y_zc)
-    results["z_contact"] = {
-        "intercept": float(model_zc.intercept_),
-        "coefficients": model_zc.coef_.tolist(),
-        "r_squared": float(model_zc.score(X_poly, y_zc)),
-    }
-
-    # Fit xISO model
-    y_xiso = df["xISO"].values
-    model_xiso = Ridge(alpha=0.01)
-    model_xiso.fit(X_poly, y_xiso)
-    results["xiso"] = {
-        "intercept": float(model_xiso.intercept_),
-        "coefficients": model_xiso.coef_.tolist(),
-        "r_squared": float(model_xiso.score(X_poly, y_xiso)),
+        "model_type": "joint_multioutput_ridge",
+        # Intercepts: [z_contact_intercept, xiso_intercept]
+        "intercept": model.intercept_.tolist(),
+        # Coefficients: [[z_contact_coefs], [xiso_coefs]]
+        "coefficients": model.coef_.tolist(),
+        "r_squared": {
+            "z_contact": float(r_squared[0]),
+            "xiso": float(r_squared[1]),
+        },
+        "residual_covariance": output_cov.tolist(),
     }
 
     return results
@@ -179,7 +199,7 @@ def _load_or_fit_coefficients(force_refit: bool = False) -> dict:
         with open(COEF_FILE, "r") as f:
             return json.load(f)
 
-    coeffs = _fit_models()
+    coeffs = _fit_joint_model()
     with open(COEF_FILE, "w") as f:
         json.dump(coeffs, f, indent=2)
 
@@ -281,105 +301,56 @@ def get_player_stats(player_name: str, season: int = None) -> dict:
         "player_name": player_full_name,
         "season": int(season),
         "mlbam_id": int(row["xMLBAMID"]),
-        "bat_speed": float(player_swings["bat_speed"].mean()),
-        "swing_length": float(player_swings["swing_length"].mean()),
+        "bat_speed": float(player_swings["bat_speed"].median()),
+        "swing_length": float(player_swings["swing_length"].median()),
         "z_contact": float(row["Z-Contact_pct"]),
         "xiso": float(row["xISO"]),
     }
-
-
-def plot_player_stat_grid(
-    player_name: str,
-    season: int = None,
-    save_path: str = None,
-) -> tuple:
-    """
-    Look up a player's stats and plot their stat change grid.
-
-    Parameters
-    ----------
-    player_name : str
-        Player name (case-insensitive, partial match supported)
-    season : int
-        Season to look up. Defaults to most recent available.
-    save_path : str
-        If provided, save figure to this path
-
-    Returns
-    -------
-    tuple
-        (player_stats dict, matplotlib Figure)
-    """
-    stats = get_player_stats(player_name, season)
-
-    print(f"\nPlayer: {stats['player_name']} ({stats['season']})")
-    print(f"  Bat Speed:    {stats['bat_speed']:.1f} mph")
-    print(f"  Swing Length: {stats['swing_length']:.2f} ft")
-    print(f"  Z-Contact:    {stats['z_contact']:.1%}")
-    print(f"  xISO:         {stats['xiso']:.3f}")
-
-    fig = plot_stat_change_grid(
-        current_bat_speed=stats["bat_speed"],
-        current_swing_length=stats["swing_length"],
-        current_z_contact=stats["z_contact"],
-        current_xiso=stats["xiso"],
-        save_path=save_path,
-    )
-
-    # Update title with player name
-    fig.suptitle(
-        f"{stats['player_name']} ({stats['season']}): "
-        f"{stats['bat_speed']:.1f} mph, {stats['swing_length']:.2f} ft",
-        fontsize=12,
-        y=1.02,
-    )
-
-    return stats, fig
 
 
 # ---------------------------------------------------------------------------
 # Main API
 # ---------------------------------------------------------------------------
 
-def update_stat(
+def update_stats(
     current_bat_speed: float,
     current_swing_length: float,
-    current_stat_value: float,
-    stat_type: str,
+    current_z_contact: float,
+    current_xiso: float,
     bat_speed_change: float = 0.0,
     swing_length_change: float = 0.0,
 ) -> dict:
     """
-    Predict how changes in bat speed and swing length affect a stat.
+    Predict how changes in bat speed and swing length affect BOTH stats simultaneously.
+
+    Uses a joint multi-output model that captures correlations between z_contact and xISO.
 
     Parameters
     ----------
     current_bat_speed : float
-        Current bat speed in mph (e.g., 77.0)
+        Current bat speed in mph (e.g., 75.0)
     current_swing_length : float
-        Current swing length in feet (e.g., 7.5)
-    current_stat_value : float
-        Current value of the stat (e.g., 0.79 for 79% zone contact)
-    stat_type : str
-        Either "z_contact" or "xiso"
+        Current swing length in feet (e.g., 7.2)
+    current_z_contact : float
+        Current zone contact rate (e.g., 0.82 for 82%)
+    current_xiso : float
+        Current xISO value (e.g., 0.180)
     bat_speed_change : float
-        Change in bat speed in mph (e.g., -4.0)
+        Change in bat speed in mph (e.g., -3.0)
     swing_length_change : float
-        Change in swing length in feet (e.g., -0.3)
+        Change in swing length in feet (e.g., -0.2)
 
     Returns
     -------
     dict
         {
-            'new_stat_value': float,
-            'stat_change': float,
+            'new_z_contact': float,
+            'new_xiso': float,
+            'z_contact_change': float,
+            'xiso_change': float,
             'warnings': list
         }
     """
-    # Validate stat_type
-    if stat_type not in ["z_contact", "xiso"]:
-        raise ValueError(f"stat_type must be 'z_contact' or 'xiso', got '{stat_type}'")
-
     warnings = []
 
     # Check for out-of-range inputs
@@ -413,7 +384,7 @@ def update_stat(
     # Load coefficients
     coeffs = _load_or_fit_coefficients()
 
-    # Helper functions for non-linear model
+    # Helper functions for the joint model
     def standardize(bs, sl):
         """Standardize inputs using saved scaler parameters."""
         return (
@@ -424,40 +395,60 @@ def update_stat(
     def make_features(bs, sl):
         """Build polynomial features for a point: [bs, sl, bs², sl², bs×sl]."""
         bs_s, sl_s = standardize(bs, sl)
-        return [bs_s, sl_s, bs_s**2, sl_s**2, bs_s * sl_s]
+        return np.array([bs_s, sl_s, bs_s**2, sl_s**2, bs_s * sl_s])
 
-    def predict(bs, sl, stat_coeffs):
-        """Predict stat value at given bat speed and swing length."""
+    def predict_both(bs, sl):
+        """
+        Predict both stats at given bat speed and swing length.
+        Returns (z_contact_pred, xiso_pred).
+        """
         features = make_features(bs, sl)
-        return stat_coeffs["intercept"] + sum(
-            c * f for c, f in zip(stat_coeffs["coefficients"], features)
-        )
+        # coefficients[0] = z_contact coefs, coefficients[1] = xiso coefs
+        z_contact_pred = coeffs["intercept"][0] + np.dot(coeffs["coefficients"][0], features)
+        xiso_pred = coeffs["intercept"][1] + np.dot(coeffs["coefficients"][1], features)
+        return z_contact_pred, xiso_pred
 
     # Predict at current and new positions
-    stat_coeffs = coeffs[stat_type]
-    pred_current = predict(current_bat_speed, current_swing_length, stat_coeffs)
-    pred_new = predict(new_bat_speed, new_swing_length, stat_coeffs)
+    pred_current_zc, pred_current_xiso = predict_both(current_bat_speed, current_swing_length)
+    pred_new_zc, pred_new_xiso = predict_both(new_bat_speed, new_swing_length)
 
-    # Model-based delta captures non-linear effects
-    stat_change = pred_new - pred_current
-    new_stat_value = current_stat_value + stat_change
+    # Model-based deltas capture non-linear effects
+    z_contact_change = pred_new_zc - pred_current_zc
+    xiso_change = pred_new_xiso - pred_current_xiso
+
+    new_z_contact = current_z_contact + z_contact_change
+    new_xiso = current_xiso + xiso_change
 
     # Clip to valid bounds
-    bounds = STAT_BOUNDS[stat_type]
-    if new_stat_value < bounds[0]:
+    zc_bounds = STAT_BOUNDS["z_contact"]
+    if new_z_contact < zc_bounds[0]:
         warnings.append(
-            f"New {stat_type} value {new_stat_value:.4f} clipped to minimum {bounds[0]}"
+            f"New z_contact value {new_z_contact:.4f} clipped to minimum {zc_bounds[0]}"
         )
-        new_stat_value = bounds[0]
-    elif new_stat_value > bounds[1]:
+        new_z_contact = zc_bounds[0]
+    elif new_z_contact > zc_bounds[1]:
         warnings.append(
-            f"New {stat_type} value {new_stat_value:.4f} clipped to maximum {bounds[1]}"
+            f"New z_contact value {new_z_contact:.4f} clipped to maximum {zc_bounds[1]}"
         )
-        new_stat_value = bounds[1]
+        new_z_contact = zc_bounds[1]
+
+    xiso_bounds = STAT_BOUNDS["xiso"]
+    if new_xiso < xiso_bounds[0]:
+        warnings.append(
+            f"New xiso value {new_xiso:.4f} clipped to minimum {xiso_bounds[0]}"
+        )
+        new_xiso = xiso_bounds[0]
+    elif new_xiso > xiso_bounds[1]:
+        warnings.append(
+            f"New xiso value {new_xiso:.4f} clipped to maximum {xiso_bounds[1]}"
+        )
+        new_xiso = xiso_bounds[1]
 
     return {
-        "new_stat_value": new_stat_value,
-        "stat_change": stat_change,
+        "new_z_contact": new_z_contact,
+        "new_xiso": new_xiso,
+        "z_contact_change": z_contact_change,
+        "xiso_change": xiso_change,
         "warnings": warnings,
     }
 
@@ -467,10 +458,12 @@ def update_stat(
 # ---------------------------------------------------------------------------
 
 def plot_stat_change_grid(
-    current_bat_speed: float,
-    current_swing_length: float,
-    current_z_contact: float = 0.80,
-    current_xiso: float = 0.200,
+    player: str = None,
+    season: int = None,
+    current_bat_speed: float = None,
+    current_swing_length: float = None,
+    current_z_contact: float = None,
+    current_xiso: float = None,
     bat_speed_range: tuple = None,
     swing_length_range: tuple = None,
     grid_size: int = 50,
@@ -479,20 +472,27 @@ def plot_stat_change_grid(
     """
     Plot heatmaps showing percent change in stats across bat speed / swing length grid.
 
+    Uses the joint model for predictions. Can lookup player stats automatically.
+
     Parameters
     ----------
+    player : str
+        Player name to look up (case-insensitive, partial match). If provided,
+        stats are looked up automatically and other stat parameters are ignored.
+    season : int
+        Season for player lookup. Defaults to most recent.
     current_bat_speed : float
-        Current bat speed in mph
+        Current bat speed in mph (ignored if player is provided)
     current_swing_length : float
-        Current swing length in feet
+        Current swing length in feet (ignored if player is provided)
     current_z_contact : float
-        Current zone contact rate (e.g., 0.80 for 80%)
+        Current zone contact rate (e.g., 0.80 for 80%) (ignored if player is provided)
     current_xiso : float
-        Current xISO value
+        Current xISO value (ignored if player is provided)
     bat_speed_range : tuple
-        (min, max) for bat speed axis. Defaults to 8% reduction from current.
+        (min, max) for bat speed axis. Defaults to -12% to +3% from current.
     swing_length_range : tuple
-        (min, max) for swing length axis. Defaults to 8% reduction from current.
+        (min, max) for swing length axis. Defaults to -12% to +3% from current.
     grid_size : int
         Number of points along each axis
     save_path : str
@@ -502,23 +502,47 @@ def plot_stat_change_grid(
     -------
     plt.Figure
     """
-    # Default ranges: only decreases, up to 8% reduction from current
-    # Current position will be at top-right (max bat speed, max swing length)
-    if bat_speed_range is None:
-        min_bs = current_bat_speed * 0.92  # 8% reduction
-        bat_speed_range = (min_bs, current_bat_speed)
-    if swing_length_range is None:
-        min_sl = current_swing_length * 0.92  # 8% reduction
-        swing_length_range = (min_sl, current_swing_length)
+    # Look up player stats if player name provided
+    player_name_display = None
+    if player is not None:
+        stats = get_player_stats(player, season)
+        current_bat_speed = stats["bat_speed"]
+        current_swing_length = stats["swing_length"]
+        current_z_contact = stats["z_contact"]
+        current_xiso = stats["xiso"]
+        player_name_display = f"{stats['player_name']} ({stats['season']})"
+        print(f"\nPlayer: {stats['player_name']} ({stats['season']})")
+        print(f"  Bat Speed:    {stats['bat_speed']:.1f} mph")
+        print(f"  Swing Length: {stats['swing_length']:.2f} ft")
+        print(f"  Z-Contact:    {stats['z_contact']:.1%}")
+        print(f"  xISO:         {stats['xiso']:.3f}")
+    else:
+        # Validate required parameters when no player provided
+        if current_bat_speed is None or current_swing_length is None:
+            raise ValueError("Must provide either 'player' or both 'current_bat_speed' and 'current_swing_length'")
+        if current_z_contact is None:
+            current_z_contact = 0.80
+        if current_xiso is None:
+            current_xiso = 0.200
 
-    # Create grid (ascending order so current is at top-right)
+    # Default ranges: -12% to +3% from current
+    if bat_speed_range is None:
+        min_bs = current_bat_speed * 0.88  # 12% reduction
+        max_bs = current_bat_speed * 1.03  # 3% increase
+        bat_speed_range = (min_bs, max_bs)
+    if swing_length_range is None:
+        min_sl = current_swing_length * 0.88  # 12% reduction
+        max_sl = current_swing_length * 1.03  # 3% increase
+        swing_length_range = (min_sl, max_sl)
+
+    # Create grid with current position centered
     swing_lengths = np.linspace(swing_length_range[0], swing_length_range[1], grid_size)
     bat_speeds = np.linspace(bat_speed_range[0], bat_speed_range[1], grid_size)
 
     # Load coefficients
     coeffs = _load_or_fit_coefficients()
 
-    # Helper functions for non-linear model
+    # Helper functions for the joint model
     def standardize(bs, sl):
         return (
             (bs - coeffs["scaler_mean"][0]) / coeffs["scaler_std"][0],
@@ -527,41 +551,44 @@ def plot_stat_change_grid(
 
     def make_features(bs, sl):
         bs_s, sl_s = standardize(bs, sl)
-        return [bs_s, sl_s, bs_s**2, sl_s**2, bs_s * sl_s]
+        return np.array([bs_s, sl_s, bs_s**2, sl_s**2, bs_s * sl_s])
 
-    def predict(bs, sl, stat_coeffs):
+    def predict_both(bs, sl):
+        """Predict both stats at given bat speed and swing length."""
         features = make_features(bs, sl)
-        return stat_coeffs["intercept"] + sum(
-            c * f for c, f in zip(stat_coeffs["coefficients"], features)
-        )
+        z_contact_pred = coeffs["intercept"][0] + np.dot(coeffs["coefficients"][0], features)
+        xiso_pred = coeffs["intercept"][1] + np.dot(coeffs["coefficients"][1], features)
+        return z_contact_pred, xiso_pred
 
-    # Calculate percent changes for each stat
+    # Predict at current position
+    pred_current_zc, pred_current_xiso = predict_both(current_bat_speed, current_swing_length)
+
+    # Build grids of percent changes for both stats
+    zc_pct_change_grid = np.zeros((grid_size, grid_size))
+    xiso_pct_change_grid = np.zeros((grid_size, grid_size))
+
+    for i, bs in enumerate(bat_speeds):
+        for j, sl in enumerate(swing_lengths):
+            # Predict at new position using joint model
+            pred_new_zc, pred_new_xiso = predict_both(bs, sl)
+
+            zc_change = pred_new_zc - pred_current_zc
+            xiso_change = pred_new_xiso - pred_current_xiso
+
+            zc_pct_change_grid[i, j] = (zc_change / current_z_contact) * 100
+            xiso_pct_change_grid[i, j] = (xiso_change / current_xiso) * 100
+
+    # Plot configuration: (grid, current_val, title, cmap, vmax_limit)
+    # Fixed colorbar limits: Z-Contact +/-10%, xISO +/-25%
     stat_configs = [
-        ("z_contact", current_z_contact, "Z-Contact % Change", "RdYlGn"),
-        ("xiso", current_xiso, "xISO % Change", "RdYlGn"),
+        (zc_pct_change_grid, current_z_contact, "Z-Contact % Change", "RdYlGn", 10),
+        (xiso_pct_change_grid, current_xiso, "xISO % Change", "RdYlGn", 25),
     ]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    for ax, (stat_type, current_val, title, cmap) in zip(axes, stat_configs):
-        stat_coeffs = coeffs[stat_type]
-
-        # Predict at current position
-        pred_current = predict(current_bat_speed, current_swing_length, stat_coeffs)
-
-        # Build grid of percent changes
-        pct_change_grid = np.zeros((grid_size, grid_size))
-
-        for i, bs in enumerate(bat_speeds):
-            for j, sl in enumerate(swing_lengths):
-                # Predict at new position and compute model delta
-                pred_new = predict(bs, sl, stat_coeffs)
-                stat_change = pred_new - pred_current
-
-                pct_change = (stat_change / current_val) * 100
-                pct_change_grid[i, j] = pct_change
-
-        # Plot heatmap
+    for ax, (pct_change_grid, current_val, title, cmap, vmax_limit) in zip(axes, stat_configs):
+        # Plot heatmap with fixed colorbar limits
         im = ax.imshow(
             pct_change_grid,
             extent=[swing_length_range[0], swing_length_range[1],
@@ -569,8 +596,8 @@ def plot_stat_change_grid(
             origin="lower",
             aspect="auto",
             cmap=cmap,
-            vmin=-np.abs(pct_change_grid).max(),
-            vmax=np.abs(pct_change_grid).max(),
+            vmin=-vmax_limit,
+            vmax=vmax_limit,
         )
 
         # Mark current position
@@ -589,11 +616,11 @@ def plot_stat_change_grid(
 
         ax.legend(loc="upper right")
 
-    plt.suptitle(
-        f"Stat Changes from Current: {current_bat_speed:.1f} mph, {current_swing_length:.2f} ft",
-        fontsize=12,
-        y=1.02,
-    )
+    if player_name_display:
+        suptitle = f"{player_name_display}: {current_bat_speed:.1f} mph, {current_swing_length:.2f} ft"
+    else:
+        suptitle = f"Stat Changes: {current_bat_speed:.1f} mph, {current_swing_length:.2f} ft"
+    plt.suptitle(suptitle, fontsize=12, y=1.02)
     plt.tight_layout()
 
     if save_path:
@@ -603,13 +630,46 @@ def plot_stat_change_grid(
     return fig
 
 
+def plot_player_stat_grid(
+    player_name: str,
+    season: int = None,
+    save_path: str = None,
+) -> tuple:
+    """
+    Look up a player's stats and plot their stat change grid.
+
+    This is a convenience wrapper around plot_stat_change_grid.
+
+    Parameters
+    ----------
+    player_name : str
+        Player name (case-insensitive, partial match supported)
+    season : int
+        Season to look up. Defaults to most recent available.
+    save_path : str
+        If provided, save figure to this path
+
+    Returns
+    -------
+    tuple
+        (player_stats dict, matplotlib Figure)
+    """
+    stats = get_player_stats(player_name, season)
+    fig = plot_stat_change_grid(
+        player=player_name,
+        season=season,
+        save_path=save_path,
+    )
+    return stats, fig
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Predict how bat speed and swing length changes affect stats"
+        description="Predict how bat speed and swing length changes affect both z_contact and xISO"
     )
 
     parser.add_argument(
@@ -620,7 +680,7 @@ def main():
     parser.add_argument(
         "--refit",
         action="store_true",
-        help="Force refit of models (ignore cached coefficients)",
+        help="Force refit of model (ignore cached coefficients)",
     )
     parser.add_argument(
         "--bat-speed",
@@ -633,14 +693,14 @@ def main():
         help="Current swing length in feet",
     )
     parser.add_argument(
-        "--current-stat",
+        "--current-z-contact",
         type=float,
-        help="Current stat value",
+        help="Current zone contact rate (e.g., 0.82)",
     )
     parser.add_argument(
-        "--stat-type",
-        choices=["z_contact", "xiso"],
-        help="Type of stat to predict",
+        "--current-xiso",
+        type=float,
+        help="Current xISO value (e.g., 0.180)",
     )
     parser.add_argument(
         "--bs-change",
@@ -658,18 +718,6 @@ def main():
         "--plot",
         action="store_true",
         help="Generate heatmap of stat changes across bat speed / swing length grid",
-    )
-    parser.add_argument(
-        "--current-z-contact",
-        type=float,
-        default=0.80,
-        help="Current zone contact rate for plotting (default: 0.80)",
-    )
-    parser.add_argument(
-        "--current-xiso",
-        type=float,
-        default=0.200,
-        help="Current xISO for plotting (default: 0.200)",
     )
     parser.add_argument(
         "--save-plot",
@@ -691,15 +739,15 @@ def main():
 
     # Show help if no arguments provided
     if not any([args.info, args.refit, args.bat_speed, args.swing_length,
-                args.current_stat, args.stat_type, args.plot, args.player]):
+                args.current_z_contact, args.current_xiso, args.plot, args.player]):
         parser.print_help()
         return
 
     # Handle player lookup and plot
     if args.player:
         try:
-            stats, fig = plot_player_stat_grid(
-                player_name=args.player,
+            fig = plot_stat_change_grid(
+                player=args.player,
                 season=args.season,
                 save_path=args.save_plot,
             )
@@ -711,27 +759,33 @@ def main():
 
     if args.info or args.refit:
         coeffs = _load_or_fit_coefficients(force_refit=args.refit)
-        print("Model Info (Polynomial Ridge Regression)")
+        print("Model Info (Multi-Output Ridge Regression)")
+        print(f"  Model type: {coeffs.get('model_type', 'joint_multioutput_ridge')}")
         print(f"  Fit date: {coeffs['fit_date']}")
         print(f"\nTraining data:")
         ts = coeffs["training_stats"]
         print(f"  N observations: {ts['n_observations']}")
         print(f"  Bat speed mean: {ts['bat_speed_mean']:.2f} mph (std: {ts['bat_speed_std']:.2f})")
         print(f"  Swing length mean: {ts['swing_length_mean']:.2f} ft (std: {ts['swing_length_std']:.2f})")
+        print(f"  Z-contact mean: {ts['z_contact_mean']:.4f} (std: {ts['z_contact_std']:.4f})")
+        print(f"  xISO mean: {ts['xiso_mean']:.4f} (std: {ts['xiso_std']:.4f})")
+        print(f"  Input correlation (bs, sl): {ts['input_correlation']:.4f}")
+        print(f"  Output correlation (z_contact, xiso): {ts['output_correlation']:.4f}")
         print(f"\nScaler parameters (for standardization):")
         print(f"  Mean: {coeffs['scaler_mean']}")
         print(f"  Std:  {coeffs['scaler_std']}")
         print(f"\nFeatures: {coeffs['feature_names']}")
-        print(f"\nZ-Contact model:")
-        zc = coeffs["z_contact"]
-        print(f"  Intercept: {zc['intercept']:.6f}")
-        print(f"  Coefficients: {[f'{c:.6f}' for c in zc['coefficients']]}")
-        print(f"  R-squared: {zc['r_squared']:.4f}")
-        print(f"\nxISO model:")
-        xi = coeffs["xiso"]
-        print(f"  Intercept: {xi['intercept']:.6f}")
-        print(f"  Coefficients: {[f'{c:.6f}' for c in xi['coefficients']]}")
-        print(f"  R-squared: {xi['r_squared']:.4f}")
+        print(f"\nModel coefficients:")
+        print(f"  Intercepts: z_contact={coeffs['intercept'][0]:.6f}, xiso={coeffs['intercept'][1]:.6f}")
+        print(f"  Z-Contact coefficients: {[f'{c:.6f}' for c in coeffs['coefficients'][0]]}")
+        print(f"  xISO coefficients: {[f'{c:.6f}' for c in coeffs['coefficients'][1]]}")
+        print(f"\nR-squared:")
+        print(f"  Z-Contact: {coeffs['r_squared']['z_contact']:.4f}")
+        print(f"  xISO: {coeffs['r_squared']['xiso']:.4f}")
+        print(f"\nResidual covariance matrix:")
+        cov = coeffs['residual_covariance']
+        print(f"  [[{cov[0][0]:.6f}, {cov[0][1]:.6f}],")
+        print(f"   [{cov[1][0]:.6f}, {cov[1][1]:.6f}]]")
         return
 
     # Handle plotting
@@ -739,11 +793,15 @@ def main():
         if args.bat_speed is None or args.swing_length is None:
             parser.error("--bat-speed and --swing-length are required for plotting")
 
+        # Use defaults for current stats if not provided
+        current_z_contact = args.current_z_contact if args.current_z_contact is not None else 0.80
+        current_xiso = args.current_xiso if args.current_xiso is not None else 0.200
+
         fig = plot_stat_change_grid(
             current_bat_speed=args.bat_speed,
             current_swing_length=args.swing_length,
-            current_z_contact=args.current_z_contact,
-            current_xiso=args.current_xiso,
+            current_z_contact=current_z_contact,
+            current_xiso=current_xiso,
             save_path=args.save_plot,
         )
 
@@ -754,22 +812,27 @@ def main():
     # Validate required args for prediction
     if args.bat_speed is None or args.swing_length is None:
         parser.error("--bat-speed and --swing-length are required for prediction")
-    if args.current_stat is None or args.stat_type is None:
-        parser.error("--current-stat and --stat-type are required for prediction")
+    if args.current_z_contact is None or args.current_xiso is None:
+        parser.error("--current-z-contact and --current-xiso are required for prediction")
 
-    result = update_stat(
+    result = update_stats(
         current_bat_speed=args.bat_speed,
         current_swing_length=args.swing_length,
-        current_stat_value=args.current_stat,
-        stat_type=args.stat_type,
+        current_z_contact=args.current_z_contact,
+        current_xiso=args.current_xiso,
         bat_speed_change=args.bs_change,
         swing_length_change=args.sl_change,
     )
 
-    print(f"\nPrediction for {args.stat_type}:")
-    print(f"  Current: {args.current_stat:.4f}")
-    print(f"  Change:  {result['stat_change']:+.4f}")
-    print(f"  New:     {result['new_stat_value']:.4f}")
+    print(f"\nPrediction:")
+    print(f"\nZ-Contact:")
+    print(f"  Current: {args.current_z_contact:.4f}")
+    print(f"  Change:  {result['z_contact_change']:+.4f}")
+    print(f"  New:     {result['new_z_contact']:.4f}")
+    print(f"\nxISO:")
+    print(f"  Current: {args.current_xiso:.4f}")
+    print(f"  Change:  {result['xiso_change']:+.4f}")
+    print(f"  New:     {result['new_xiso']:.4f}")
 
     if result["warnings"]:
         print("\nWarnings:")
@@ -779,6 +842,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
