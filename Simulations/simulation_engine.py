@@ -479,9 +479,9 @@ def simulate_player(
     pd.DataFrame
         Simulation results for this player
     """
-    # Import update_stat function
+    # Import update_stats function (joint model)
     sys.path.insert(0, str(BAYES_DIR))
-    from update_stats import update_stat, get_player_stats as get_player_stats_swing
+    from update_stats import update_stats, get_player_stats as get_player_stats_swing
 
     try:
         # Get player baseline stats
@@ -583,25 +583,17 @@ def simulate_player(
             new_bat_speed = baseline_bat_speed + bs_change
             new_swing_length = baseline_swing_length + sl_change
 
-            zc_result = update_stat(
+            # Use joint model to get both adjusted stats at once
+            stats_result = update_stats(
                 current_bat_speed=baseline_bat_speed,
                 current_swing_length=baseline_swing_length,
-                current_stat_value=baseline_z_contact,
-                stat_type="z_contact",
+                current_z_contact=baseline_z_contact,
+                current_xiso=baseline_xiso,
                 bat_speed_change=bs_change,
                 swing_length_change=sl_change,
             )
-            adjusted_z_contact = zc_result["new_stat_value"]
-
-            xiso_result = update_stat(
-                current_bat_speed=baseline_bat_speed,
-                current_swing_length=baseline_swing_length,
-                current_stat_value=baseline_xiso,
-                stat_type="xiso",
-                bat_speed_change=bs_change,
-                swing_length_change=sl_change,
-            )
-            adjusted_xiso = xiso_result["new_stat_value"]
+            adjusted_z_contact = stats_result["new_z_contact"]
+            adjusted_xiso = stats_result["new_xiso"]
 
             # For each pitcher xFIP percentile
             for xfip_pct, xfip_value in xfip_percentile_values.items():
