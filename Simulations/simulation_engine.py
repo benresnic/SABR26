@@ -682,6 +682,62 @@ def simulate_player(
     return pd.DataFrame(results)
 
 
+def _simulate_player_worker(args: Tuple) -> Tuple[str, Optional[pd.DataFrame]]:
+    """
+    Worker function for parallel simulation.
+
+    Loads all necessary data within the worker process to avoid pickling issues.
+
+    Parameters
+    ----------
+    args : tuple
+        (player_id, player_name, reduced_states, worker_id, total_players)
+
+    Returns
+    -------
+    tuple
+        (player_name, results_df or None)
+    """
+    player_id, player_name, reduced_states, worker_id, total_players = args
+
+    try:
+        # Load all data within worker process (avoids pickling issues with idata)
+        idata, scalers, _, _ = load_bayesian_model()
+        wp_table = build_wp_lookup()
+        transition_tables = load_transition_tables()
+        xfip_percentile_values = compute_xfip_percentiles()
+        states_df = generate_state_space(reduced=reduced_states)
+
+        print(f"[Worker] Simulating {player_name} ({worker_id}/{total_players})...")
+
+        player_results = simulate_player(
+            player_id=player_id,
+            player_name=player_name,
+            idata=idata,
+            scalers=scalers,
+            wp_table=wp_table,
+            transition_tables=transition_tables,
+            xfip_percentile_values=xfip_percentile_values,
+            states_df=states_df,
+            verbose=False,  # Reduce noise in parallel mode
+        )
+
+        if len(player_results) > 0:
+            # Save to output directory
+            safe_name = player_name.replace(" ", "_").replace(".", "")
+            output_path = OUTPUT_DIR / f"{safe_name}_simulation.parquet"
+            player_results.to_parquet(output_path, index=False)
+            print(f"[Worker] Completed {player_name}: {len(player_results)} rows saved")
+            return (player_name, player_results)
+        else:
+            print(f"[Worker] Skipped {player_name}: no results")
+            return (player_name, None)
+
+    except Exception as e:
+        print(f"[Worker] Error simulating {player_name}: {e}")
+        return (player_name, None)
+
+
 def run_simulation(
     players: List[int] = None,
     reduced_states: bool = False,
@@ -698,7 +754,7 @@ def run_simulation(
     reduced_states : bool
         If True, use reduced state space for faster testing.
     n_workers : int
-        Number of parallel workers (not yet implemented for parallel execution).
+        Number of parallel workers. If > 1, runs simulations in parallel.
     verbose : bool
         Print progress.
 
@@ -710,28 +766,6 @@ def run_simulation(
     if verbose:
         print("Loading models and data...")
 
-    # Load Bayesian model
-    idata, scalers, batter_stats, pitcher_stats = load_bayesian_model()
-
-    # Build lookup tables
-    if verbose:
-        print("Building win probability table...")
-    wp_table = build_wp_lookup()
-
-    if verbose:
-        print("Building transition tables...")
-    transition_tables = load_transition_tables()
-
-    # Get xFIP percentiles
-    xfip_percentile_values = compute_xfip_percentiles()
-    if verbose:
-        print(f"xFIP percentiles: {xfip_percentile_values}")
-
-    # Generate state space
-    states_df = generate_state_space(reduced=reduced_states)
-    if verbose:
-        print(f"State space size: {len(states_df)}")
-
     # Get PVC players
     pvc_players = get_pvc_players()
     if verbose:
@@ -740,38 +774,88 @@ def run_simulation(
     if players is not None:
         pvc_players = pvc_players[pvc_players["batter_id"].isin(players)]
 
-    # Run simulations
+    player_list = [
+        (int(row["batter_id"]), row["player_name"])
+        for _, row in pvc_players.iterrows()
+    ]
+    total_players = len(player_list)
+
+    if verbose:
+        print(f"Will simulate {total_players} players with {n_workers} worker(s)")
+
     results = {}
 
-    for idx, row in pvc_players.iterrows():
-        player_id = int(row["batter_id"])
-        player_name = row["player_name"]
+    if n_workers > 1:
+        # Parallel execution
+        if verbose:
+            print(f"Starting parallel simulation with {n_workers} workers...")
+
+        # Prepare worker arguments
+        worker_args = [
+            (player_id, player_name, reduced_states, idx + 1, total_players)
+            for idx, (player_id, player_name) in enumerate(player_list)
+        ]
+
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(_simulate_player_worker, args): args[1]
+                for args in worker_args
+            }
+
+            for future in as_completed(futures):
+                player_name = futures[future]
+                try:
+                    name, player_results = future.result()
+                    if player_results is not None:
+                        results[name] = player_results
+                except Exception as e:
+                    print(f"Error processing {player_name}: {e}")
+    else:
+        # Sequential execution (original behavior)
+        # Load shared data once for efficiency
+        idata, scalers, batter_stats, pitcher_stats = load_bayesian_model()
 
         if verbose:
-            print(f"\nSimulating {player_name} ({idx + 1}/{len(pvc_players)})...")
+            print("Building win probability table...")
+        wp_table = build_wp_lookup()
 
-        player_results = simulate_player(
-            player_id=player_id,
-            player_name=player_name,
-            idata=idata,
-            scalers=scalers,
-            wp_table=wp_table,
-            transition_tables=transition_tables,
-            xfip_percentile_values=xfip_percentile_values,
-            states_df=states_df,
-            verbose=verbose,
-        )
+        if verbose:
+            print("Building transition tables...")
+        transition_tables = load_transition_tables()
 
-        if len(player_results) > 0:
-            # Save to output directory
-            safe_name = player_name.replace(" ", "_").replace(".", "")
-            output_path = OUTPUT_DIR / f"{safe_name}_simulation.parquet"
-            player_results.to_parquet(output_path, index=False)
+        xfip_percentile_values = compute_xfip_percentiles()
+        if verbose:
+            print(f"xFIP percentiles: {xfip_percentile_values}")
 
+        states_df = generate_state_space(reduced=reduced_states)
+        if verbose:
+            print(f"State space size: {len(states_df)}")
+
+        for idx, (player_id, player_name) in enumerate(player_list):
             if verbose:
-                print(f"  Saved {len(player_results)} rows to {output_path}")
+                print(f"\nSimulating {player_name} ({idx + 1}/{total_players})...")
 
-            results[player_name] = player_results
+            player_results = simulate_player(
+                player_id=player_id,
+                player_name=player_name,
+                idata=idata,
+                scalers=scalers,
+                wp_table=wp_table,
+                transition_tables=transition_tables,
+                xfip_percentile_values=xfip_percentile_values,
+                states_df=states_df,
+                verbose=verbose,
+            )
+
+            if len(player_results) > 0:
+                safe_name = player_name.replace(" ", "_").replace(".", "")
+                output_path = OUTPUT_DIR / f"{safe_name}_simulation.parquet"
+                player_results.to_parquet(output_path, index=False)
+
+                if verbose:
+                    print(f"  Saved {len(player_results)} rows to {output_path}")
+
+                results[player_name] = player_results
 
     return results
 
