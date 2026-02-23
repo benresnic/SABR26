@@ -72,31 +72,40 @@ def compute_expected_delta_wp(
             new_score_diff = score_diff + runs_scored
 
             if post_outs >= 3:
-                # Inning is over - switch perspective
-                # At end of top of inning, batting team becomes fielding team
-                # At end of bottom, vice versa
-                if inning_topbot == "Top":
-                    # Was batting in top, now fielding in bottom
-                    # Score diff stays same (from original batting team's perspective)
+                # Inning is over - check for game-ending conditions
+                if inning_topbot == "Bot" and inning >= 9:
+                    # End of bottom 9th or later - check if game is over
+                    if new_score_diff > 0:
+                        # Home team ahead - they win
+                        new_wp = 1.0
+                    elif new_score_diff < 0:
+                        # Home team behind - they lose
+                        new_wp = 0.0
+                    else:
+                        # Tied - extra innings, look up top of next inning
+                        new_inning = min(inning + 1, 9)
+                        opponent_wp = lookup_wp(0, 0, new_inning, "Top", -new_score_diff, wp_table)
+                        new_wp = 1.0 - opponent_wp
+                elif inning_topbot == "Top":
+                    # End of top half - bottom half coming up
                     new_topbot = "Bot"
                     new_inning = inning
+                    opponent_wp = lookup_wp(0, 0, new_inning, new_topbot, -new_score_diff, wp_table)
+                    new_wp = 1.0 - opponent_wp
                 else:
-                    # Was batting in bottom, now fielding in top of next inning
+                    # End of bottom half (innings 1-8) - top of next inning
                     new_topbot = "Top"
-                    new_inning = min(inning + 1, 9)
-
-                # When team switches from batting to fielding, WP lookup uses
-                # the opponent's perspective. We need to flip.
-                # Actually, bat_win_exp is always from batting team's view.
-                # When we become the fielding team, our WP is 1 - batting_team_wp
-                # But simpler: after 3 outs, we look up WP for the new batting team
-                # which is our opponent, so our WP = 1 - that value
-
-                opponent_wp = lookup_wp(0, 0, new_inning, new_topbot, -new_score_diff, wp_table)
-                new_wp = 1.0 - opponent_wp
+                    new_inning = inning + 1
+                    opponent_wp = lookup_wp(0, 0, new_inning, new_topbot, -new_score_diff, wp_table)
+                    new_wp = 1.0 - opponent_wp
             else:
                 # Same half-inning continues
-                new_wp = lookup_wp(post_outs, post_base, inning, inning_topbot, new_score_diff, wp_table)
+                # Check for walk-off: bottom 9+ and home team takes the lead
+                if inning >= 9 and inning_topbot == "Bot" and score_diff <= 0 and new_score_diff > 0:
+                    # Walk-off! Home team wins immediately
+                    new_wp = 1.0
+                else:
+                    new_wp = lookup_wp(post_outs, post_base, inning, inning_topbot, new_score_diff, wp_table)
 
             expected_new_wp += p_outcome * p_trans * new_wp
 
@@ -202,17 +211,40 @@ def compute_outcome_delta_wp(
         new_score_diff = score_diff + runs_scored
 
         if post_outs >= 3:
-            if inning_topbot == "Top":
+            # Inning is over - check for game-ending conditions
+            if inning_topbot == "Bot" and inning >= 9:
+                # End of bottom 9th or later - check if game is over
+                if new_score_diff > 0:
+                    # Home team ahead - they win
+                    new_wp = 1.0
+                elif new_score_diff < 0:
+                    # Home team behind - they lose
+                    new_wp = 0.0
+                else:
+                    # Tied - extra innings
+                    new_inning = min(inning + 1, 9)
+                    opponent_wp = lookup_wp(0, 0, new_inning, "Top", -new_score_diff, wp_table)
+                    new_wp = 1.0 - opponent_wp
+            elif inning_topbot == "Top":
+                # End of top half - bottom half coming up
                 new_topbot = "Bot"
                 new_inning = inning
+                opponent_wp = lookup_wp(0, 0, new_inning, new_topbot, -new_score_diff, wp_table)
+                new_wp = 1.0 - opponent_wp
             else:
+                # End of bottom half (innings 1-8) - top of next inning
                 new_topbot = "Top"
-                new_inning = min(inning + 1, 9)
-
-            opponent_wp = lookup_wp(0, 0, new_inning, new_topbot, -new_score_diff, wp_table)
-            new_wp = 1.0 - opponent_wp
+                new_inning = inning + 1
+                opponent_wp = lookup_wp(0, 0, new_inning, new_topbot, -new_score_diff, wp_table)
+                new_wp = 1.0 - opponent_wp
         else:
-            new_wp = lookup_wp(post_outs, post_base, inning, inning_topbot, new_score_diff, wp_table)
+            # Same half-inning continues
+            # Check for walk-off: bottom 9+ and home team takes the lead
+            if inning >= 9 and inning_topbot == "Bot" and score_diff <= 0 and new_score_diff > 0:
+                # Walk-off! Home team wins immediately
+                new_wp = 1.0
+            else:
+                new_wp = lookup_wp(post_outs, post_base, inning, inning_topbot, new_score_diff, wp_table)
 
         expected_new_wp += p_trans * new_wp
 
@@ -251,3 +283,77 @@ if __name__ == "__main__":
         print(f"    Current WP: {current_wp:.3f}")
         print(f"    Expected new WP: {expected_wp:.3f}")
         print(f"    Delta WP: {delta_wp:+.4f}")
+
+    # Test walk-off scenarios
+    print("\n" + "=" * 60)
+    print("Walk-off scenario tests:")
+    print("=" * 60)
+
+    # Test 1: Walk-off home run (bottom 9, tied, bases empty)
+    # HR should give WP = 1.0
+    hr_delta = compute_outcome_delta_wp(
+        outcome_idx=6,  # HR
+        outs=1, base_state=0, inning=9, inning_topbot="Bot", score_diff=0,
+        wp_table=wp_table, transition_tables=trans_tables
+    )
+    current_wp = lookup_wp(1, 0, 9, "Bot", 0, wp_table)
+    print(f"\n  Walk-off HR (Bot 9, tied, 1 out, bases empty):")
+    print(f"    Current WP: {current_wp:.3f}")
+    print(f"    Delta WP from HR: {hr_delta:+.4f}")
+    print(f"    New WP: {current_wp + hr_delta:.3f} (should be 1.000)")
+
+    # Test 2: Single with runner on 2B (bottom 9, tied)
+    # Note: Not all singles score the runner - ~52% do per transition tables
+    single_delta = compute_outcome_delta_wp(
+        outcome_idx=3,  # Single
+        outs=1, base_state=2, inning=9, inning_topbot="Bot", score_diff=0,
+        wp_table=wp_table, transition_tables=trans_tables
+    )
+    current_wp = lookup_wp(1, 2, 9, "Bot", 0, wp_table)
+    print(f"\n  Single with runner on 2B (Bot 9, tied, 1 out):")
+    print(f"    Current WP: {current_wp:.3f}")
+    print(f"    Delta WP from single: {single_delta:+.4f}")
+    print(f"    New WP: {current_wp + single_delta:.3f} (weighted avg - ~52% walk-off)")
+
+    # Test 3: Strikeout for 3rd out, bottom 9, home team behind
+    k_delta = compute_outcome_delta_wp(
+        outcome_idx=0,  # K
+        outs=2, base_state=0, inning=9, inning_topbot="Bot", score_diff=-1,
+        wp_table=wp_table, transition_tables=trans_tables
+    )
+    current_wp = lookup_wp(2, 0, 9, "Bot", -1, wp_table)
+    print(f"\n  Game-ending K (Bot 9, down 1, 2 outs, bases empty):")
+    print(f"    Current WP: {current_wp:.3f}")
+    print(f"    Delta WP from K: {k_delta:+.4f}")
+    print(f"    New WP: {current_wp + k_delta:.3f} (should be 0.000)")
+
+    # Test 4: End of bottom 9 with home team ahead (already winning)
+    k_delta_ahead = compute_outcome_delta_wp(
+        outcome_idx=0,  # K
+        outs=2, base_state=0, inning=9, inning_topbot="Bot", score_diff=1,
+        wp_table=wp_table, transition_tables=trans_tables
+    )
+    current_wp = lookup_wp(2, 0, 9, "Bot", 1, wp_table)
+    print(f"\n  Game-ending K (Bot 9, up 1, 2 outs, bases empty):")
+    print(f"    Current WP: {current_wp:.3f}")
+    print(f"    Delta WP from K: {k_delta_ahead:+.4f}")
+    print(f"    New WP: {current_wp + k_delta_ahead:.3f} (should be 1.000)")
+
+    # Test 5: Walk-off walk with bases loaded (guaranteed run)
+    walk_delta = compute_outcome_delta_wp(
+        outcome_idx=1,  # BB/HBP
+        outs=1, base_state=7, inning=9, inning_topbot="Bot", score_diff=0,
+        wp_table=wp_table, transition_tables=trans_tables
+    )
+    current_wp = lookup_wp(1, 7, 9, "Bot", 0, wp_table)
+    print(f"\n  Walk-off walk (Bot 9, tied, 1 out, bases loaded):")
+    print(f"    Current WP: {current_wp:.3f}")
+    print(f"    Delta WP from walk: {walk_delta:+.4f}")
+    print(f"    New WP: {current_wp + walk_delta:.3f} (should be 1.000)")
+
+    # Test 6: Check transition probabilities for single with runner on 2B
+    print(f"\n  Transition check - Single with runner on 2B:")
+    from .runner_advancement import get_transitions
+    trans = get_transitions(3, 1, 2, trans_tables)  # Single, 1 out, runner on 2B
+    for post_base, post_outs, runs, prob in trans:
+        print(f"    -> base={post_base}, outs={post_outs}, runs={runs}, p={prob:.3f}")
