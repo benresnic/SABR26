@@ -155,10 +155,10 @@ def build_transition_tables(
     pa_endings["post_base_state"] = pa_endings["post_base_state_check"]
     pa_endings["post_outs"] = pa_endings["post_outs_check"]
 
-    # If inning changed, post state is 0 outs, empty bases
+    # If inning changed, the play resulted in 3 outs (inning over)
     inning_ended = ~same_half_inning & pa_endings["next_inning"].notna()
     pa_endings.loc[inning_ended, "post_base_state"] = 0
-    pa_endings.loc[inning_ended, "post_outs"] = 0
+    pa_endings.loc[inning_ended, "post_outs"] = 3  # 3 outs = inning over
 
     # If this is the last PA of the game, set post state to current outs + delta
     # We'll use a heuristic: if post_outs is missing, estimate from outcome
