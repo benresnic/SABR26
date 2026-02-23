@@ -1,6 +1,7 @@
 # Load in necessary libraries
 library(tidyverse)
 library(arrow)
+library(scales)
 
 # Necessary data (using 2024-25)
 data_24 <- read_parquet("pbp_2024.parquet")
@@ -142,15 +143,20 @@ print(effect_summary)
 
 
 # 5) VISUALIZATIONS
-cluster_colors <- c("#1b7837", "#4393c3", "#2d9e9e",
-                    "#6baed6", "#807dba", "#54278f", "#00798c", "#e08214")
+cluster_colors <- c(
+  "#f76900",  # Home Run   — Syracuse orange
+  "#ffd200",  # Triple     — gold/yellow
+  "#00a693",  # Double     — teal
+  "#4a6fa5",  # Single     — medium blue
+  "#7a3800",  # Walk       — burnt orange/brown
+  "#6d3a9c",  # HBP        — purple
+  "#002366",  # Strikeout  — navy
+  "#000e54"   # Other Out  — darkest blue
+)
 
-# Order counts logically
-count_order <- c("0-0","0-1","0-2","1-0","1-1","1-2","2-0","2-1","2-2","3-0","3-1","3-2")
-
-# Stacked bar: outcome proportions by count
-outcome_order <- c("Home Run", "Triple", "Double", "Single", "Walk", "HBP", "Strikeout", "Other Out")
-
+outcome_order  <- c("Home Run", "Triple", "Double", "Single", "Walk", "HBP", "Strikeout", "Other Out")
+count_order    <- c("0-0","0-1","0-2","1-0","1-1","1-2","2-0","2-1","2-2","3-0","3-1","3-2")
+base_order     <- c("Empty", "1B", "2B", "3B", "1B-2B", "1B-3B", "2B-3B", "Loaded")
 
 ggplot(count_props %>% mutate(
   count   = factor(count, levels = count_order),
@@ -158,55 +164,36 @@ ggplot(count_props %>% mutate(
   aes(x = count, y = prop, fill = outcome)) +
   geom_col(position = "fill") +
   scale_fill_manual(values = cluster_colors) +
-  scale_y_continuous(labels = scales::percent) +
-  labs(
-    title    = "PA Outcome Distribution by Count",
-    subtitle = paste0("Cramér's V = ", round(v_count, 4), " — Strong association"),
-    x        = "Count",
-    y        = "Proportion of PAs",
-    fill     = "Outcome"
-  ) +
+  scale_y_continuous(labels = percent) +
+  labs(title = "PA Outcome Distribution by Count",
+       subtitle = paste0("Cramér's V = ", round(v_count, 4), " — Strong association"),
+       x = "Count", y = "Proportion of PAs") +
   theme_minimal(base_size = 12) +
-  theme(
-    axis.title.y      = element_text(face = "bold", size = 14),
-    axis.title.x      = element_text(face = "bold", size = 14),
-    plot.title        = element_text(face = "bold", size = 16, hjust = 0.5),
-    plot.subtitle     = element_text(hjust = 0.5),
-    legend.title      = element_text(face = "bold"),
-    legend.background = element_rect(fill = "lightyellow", color = "black", linewidth = 0.5)
-  )
+  theme(axis.title.y    = element_text(face = "bold", size = 14),
+        axis.title.x    = element_text(face = "bold", size = 14),
+        plot.title      = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.subtitle   = element_text(hjust = 0.5, size = 13, face = "bold", color = "#cc0000"),
+        legend.position = "none")
 
 ggsave("outcome_proportions_count.png", width = 10, height = 6, dpi = 300)
 
-
-# Stacked bar: outcome proportions by outs
 ggplot(outs_props %>% mutate(outcome = factor(outcome, levels = outcome_order)),
        aes(x = outs, y = prop, fill = outcome)) +
   geom_col(position = "fill") +
   scale_fill_manual(values = cluster_colors) +
-  scale_y_continuous(labels = scales::percent) +
-  labs(
-    title    = "PA Outcome Distribution by Outs",
-    subtitle = paste0("Cramér's V = ", round(v_outs, 4), " — Weak association"),
-    x        = "Outs",
-    y        = "Proportion of PAs",
-    fill     = "Outcome"
-  ) +
+  scale_y_continuous(labels = percent) +
+  labs(title = "PA Outcome Distribution by Outs",
+       subtitle = paste0("Cramér's V = ", round(v_outs, 4), " — Weak association"),
+       x = "Outs", y = "Proportion of PAs") +
   theme_minimal(base_size = 12) +
-  theme(
-    axis.title.y      = element_text(face = "bold", size = 14),
-    axis.title.x      = element_text(face = "bold", size = 14),
-    plot.title        = element_text(face = "bold", size = 16, hjust = 0.5),
-    plot.subtitle     = element_text(hjust = 0.5),
-    legend.title      = element_text(face = "bold"),
-    legend.background = element_rect(fill = "lightyellow", color = "black", linewidth = 0.5)
-  )
+  theme(axis.title.y    = element_text(face = "bold", size = 14),
+        axis.title.x    = element_text(face = "bold", size = 14),
+        plot.title      = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.subtitle   = element_text(hjust = 0.5, size = 13, face = "bold", color = "#cc0000"),
+        legend.position = "none")
 
 ggsave("outcome_proportions_outs.png", width = 10, height = 6, dpi = 300)
 
-
-# Stacked bar: outcome proportions by base state
-base_order <- c("Empty", "1B", "2B", "3B", "1B-2B", "1B-3B", "2B-3B", "Loaded")
 
 ggplot(base_props %>% mutate(
   base_state = factor(base_state, levels = base_order),
@@ -214,28 +201,42 @@ ggplot(base_props %>% mutate(
   aes(x = base_state, y = prop, fill = outcome)) +
   geom_col(position = "fill") +
   scale_fill_manual(values = cluster_colors) +
-  scale_y_continuous(labels = scales::percent) +
-  labs(
-    title    = "PA Outcome Distribution by Base State",
-    subtitle = paste0("Cramér's V = ", round(v_base, 4), " — Weak association"),
-    x        = "Base State",
-    y        = "Proportion of PAs",
-    fill     = "Outcome"
-  ) +
+  scale_y_continuous(labels = percent) +
+  labs(title = "PA Outcome Distribution by Base State",
+       subtitle = paste0("Cramér's V = ", round(v_base, 4), " — Weak association"),
+       x = "Base State", y = "Proportion of PAs") +
   theme_minimal(base_size = 12) +
-  theme(
-    axis.title.y      = element_text(face = "bold", size = 14),
-    axis.title.x      = element_text(face = "bold", size = 14),
-    plot.title        = element_text(face = "bold", size = 16, hjust = 0.5),
-    plot.subtitle     = element_text(hjust = 0.5),
-    legend.title      = element_text(face = "bold"),
-    legend.background = element_rect(fill = "lightyellow", color = "black", linewidth = 0.5)
-  )
+  theme(axis.title.y    = element_text(face = "bold", size = 14),
+        axis.title.x    = element_text(face = "bold", size = 14),
+        plot.title      = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.subtitle   = element_text(hjust = 0.5, size = 13, face = "bold", color = "#cc0000"),
+        legend.position = "none")
 
 ggsave("outcome_proportions_base_states.png", width = 10, height = 6, dpi = 300)
 
 
-# Save the effect summary as a csv
+legend_data <- data.frame(
+  outcome = factor(outcome_order, levels = rev(outcome_order))
+)
+
+legend_plot <- ggplot(legend_data, aes(x = 1, y = outcome, fill = outcome)) +
+  geom_tile() +
+  scale_fill_manual(values = rev(cluster_colors)) +
+  theme_void() +
+  theme(
+    legend.position  = "none",
+    plot.background  = element_rect(fill = "lightyellow", color = "black", linewidth = 0.8),
+    plot.margin      = margin(20, 10, 10, 10)
+  ) +
+  geom_text(aes(label = outcome), x = 1.6, hjust = 0, size = 4) +
+  annotate("text", x = 1.1, y = 9.2, label = "Outcome", fontface = "bold", size = 5, hjust = 0.5) +
+  coord_cartesian(xlim = c(0.5, 4.5), ylim = c(0.5, 9.5), clip = "off") +
+  scale_x_continuous(expand = c(0, 0))
+
+ggsave("outcome_legend.png", plot = legend_plot, width = 3, height = 3.5, dpi = 300)
+
+
+# 6) Write csv
 write_csv(effect_summary, "chi_square_summary.csv")
 
 
