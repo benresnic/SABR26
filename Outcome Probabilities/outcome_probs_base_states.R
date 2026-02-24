@@ -148,9 +148,9 @@ cluster_colors <- c(
   "#ffd200",  # Triple     — gold/yellow
   "#00a693",  # Double     — teal
   "#4a6fa5",  # Single     — medium blue
-  "#7a3800",  # Walk       — burnt orange/brown
+  "#e8913d",  # Walk       — burnt orange/brown
   "#6d3a9c",  # HBP        — purple
-  "#002366",  # Strikeout  — navy
+  "#004499",  # Strikeout  — navy
   "#000e54"   # Other Out  — darkest blue
 )
 
