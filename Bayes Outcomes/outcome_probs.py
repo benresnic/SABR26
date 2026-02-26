@@ -160,11 +160,11 @@ def build_model(data):
 
         # --- Global priors ---
         alpha = pm.Normal("alpha", 0, 2, shape=(6,))
-        beta_count = pm.Normal("beta_count", 0, 1.5, shape=(11, 6))
-        beta_o_swing = pm.Normal("beta_o_swing", 0, 1, shape=(6,))
-        beta_z_contact = pm.Normal("beta_z_contact", 0, 1, shape=(6,))
-        beta_xiso = pm.Normal("beta_xiso", 0, 1, shape=(6,))
-        beta_xfip = pm.Normal("beta_xfip", 0, 1, shape=(6,))
+        beta_count = pm.Normal("beta_count", 0, 2, shape=(11, 6))
+        beta_o_swing = pm.Normal("beta_o_swing", 0, 2, shape=(6,))
+        beta_z_contact = pm.Normal("beta_z_contact", 0, 2, shape=(6,))
+        beta_xiso = pm.Normal("beta_xiso", 0, 2, shape=(6,))
+        beta_xfip = pm.Normal("beta_xfip", 0, 2, shape=(6,))
 
         # --- Linear predictor: (N, 6) for non-reference outcomes ---
         logit_mat = (

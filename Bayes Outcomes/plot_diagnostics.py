@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import arviz as az
 from pathlib import Path
+from matplotlib.lines import Line2D
 
 # ---------------------------------------------------------------------------
 # Label constants (match model structure)
@@ -82,19 +83,67 @@ def plot_trace(idata, save_dir=None):
     the figure; its convergence is fully captured by the R-hat plot.
     """
     var_names = ["alpha"] + list(CONT_BETAS.keys())
-    n_vars = sum(
-        int(np.prod(idata.posterior[v].shape[2:]))
-        for v in var_names
-    )
+    # ArviZ trace layout defaults to (n_vars rows) x (2 cols). We transpose it to
+    # 2 rows x n_vars cols after plotting so it reads left-to-right across variables.
+    n_vars = len(var_names)
     axes = az.plot_trace(
         idata,
         var_names=var_names,
-        figsize=(14, 2.5 * n_vars),
+        figsize=(3.8 * n_vars, 7.2),
         compact=True,
     )
-    fig = axes.ravel()[0].get_figure()
-    fig.suptitle("Trace plots — alpha & continuous betas", y=1.005, fontsize=13)
-    fig.subplots_adjust(hspace=0.4)
+    axes_arr = np.asarray(axes)
+    fig = axes_arr.ravel()[0].get_figure()
+
+    # Reposition existing axes into a 2 x n_vars grid (transpose of ArviZ default).
+    if axes_arr.ndim == 2 and axes_arr.shape == (n_vars, 2):
+        left, right = 0.05, 0.99
+        bottom, top = 0.14, 0.90
+        hgap, vgap = 0.018, 0.10
+        ncols, nrows = n_vars, 2
+        ax_w = (right - left - hgap * (ncols - 1)) / ncols
+        ax_h = (top - bottom - vgap * (nrows - 1)) / nrows
+
+        for c in range(n_vars):
+            for r in range(2):
+                ax = axes_arr[c, r]  # old layout: (var row, trace/posterior col)
+                x0 = left + c * (ax_w + hgap)
+                y0 = top - (r + 1) * ax_h - r * vgap
+                ax.set_position([x0, y0, ax_w, ax_h])
+
+        # Build color legend from the first plotted variable (compact mode uses
+        # consistent colors for outcome dimensions across variables).
+        seen = set()
+        legend_colors = []
+        for ax in (axes_arr[0, 0], axes_arr[0, 1]):
+            for line in ax.get_lines():
+                c = line.get_color()
+                key = str(c)
+                if key not in seen:
+                    seen.add(key)
+                    legend_colors.append(c)
+                if len(legend_colors) >= len(OUTCOME_LABELS_6):
+                    break
+            if len(legend_colors) >= len(OUTCOME_LABELS_6):
+                break
+
+        if len(legend_colors) >= len(OUTCOME_LABELS_6):
+            handles = [
+                Line2D([0], [0], color=legend_colors[i], lw=2.0, label=OUTCOME_LABELS_6[i])
+                for i in range(len(OUTCOME_LABELS_6))
+            ]
+            fig.legend(
+                handles=handles,
+                loc="lower center",
+                ncol=6,
+                frameon=False,
+                bbox_to_anchor=(0.5, 0.015),
+                fontsize=9,
+                title="Outcome Color",
+                title_fontsize=9,
+            )
+
+    fig.suptitle("Trace plots — alpha & continuous betas", y=0.965, fontsize=13)
     _maybe_save(fig, save_dir, "trace.png")
     return fig
 
@@ -167,7 +216,7 @@ def plot_alpha_forest(idata, save_dir=None):
         y,
         med,
         xerr=[med - lo, hi - med],
-        color=["#d62728" if m > 0 else "#1f77b4" for m in med],
+        color=["#F76900" if m > 0 else "#000E54" for m in med],
         error_kw=dict(ecolor="black", lw=1.2, capsize=3),
         height=0.6,
     )
@@ -226,50 +275,73 @@ def plot_count_effects(idata, save_dir=None):
 
 def plot_coef_effects(idata, save_dir=None):
     """
-    One panel per continuous predictor: 94% HDI for each outcome.
-    Gives a quick read on which predictors push which outcomes.
+    One panel per continuous predictor: 95% CI for each outcome.
+
+    Each bar shows: for a 1-SD increase in the predictor, how much do the odds
+    of that outcome change (%) relative to field_out?
+
+    Positive (orange) = predictor increases odds of this outcome
+    Negative (blue) = predictor decreases odds of this outcome
     """
     n_betas = len(CONT_BETAS)
-    fig, axes = plt.subplots(1, n_betas, figsize=(4 * n_betas, 4), sharey=True)
+    fig, axes = plt.subplots(1, n_betas, figsize=(4 * n_betas, 5), sharey=True)
 
     post = idata.posterior
     for ax, (var, label) in zip(axes, CONT_BETAS.items()):
         draws = post[var].values.reshape(-1, 6)  # (S, 6) in log-odds
         draws_pct = _logodds_to_pct_odds_shift(draws)  # (S, 6) in %
         med = np.median(draws_pct, axis=0)
-        lo = np.percentile(draws_pct, 3, axis=0)
-        hi = np.percentile(draws_pct, 97, axis=0)
+        lo = np.percentile(draws_pct, 2.5, axis=0)
+        hi = np.percentile(draws_pct, 97.5, axis=0)
 
         y = np.arange(6)
         ax.barh(y, med, xerr=[med - lo, hi - med],
-                color=["#d62728" if m > 0 else "#1f77b4" for m in med],
+                color=["#F76900" if m > 0 else "#000E54" for m in med],
                 error_kw=dict(ecolor="black", lw=1.2, capsize=3),
                 height=0.6)
         ax.axvline(0, color="gray", linewidth=0.9, linestyle="--")
         ax.set_yticks(y)
         ax.set_yticklabels(OUTCOME_LABELS_6, fontsize=9)
-        ax.set_title(label, fontsize=10)
-        ax.set_xlabel("Odds shift (%)", fontsize=8)
+        ax.set_title(f"{label}\n(per 1-SD increase)", fontsize=10)
+        ax.set_xlabel("% change in odds vs field_out", fontsize=8)
 
-    fig.suptitle("Continuous predictor effects — posterior median odds shift (%) ± 94% HDI",
-                 fontsize=12, y=1.02)
+    fig.suptitle("Effect of Batter/Pitcher Stats on Outcome Odds (95% CI)\n"
+                 "Orange = increases odds, Blue = decreases odds",
+                 fontsize=11, y=1.04)
     fig.tight_layout()
     _maybe_save(fig, save_dir, "coef_effects.png")
     return fig
 
 
 # ---------------------------------------------------------------------------
-# 7. Implied baseline outcome probabilities (0-0 count, avg batter/pitcher)
+# 7. Example predicted outcome probabilities (single observed PA context)
 # ---------------------------------------------------------------------------
 
-def plot_baseline_probs(idata, count_X_train=None, save_dir=None):
-    """
-    Posterior predicted outcome probabilities, marginalized over the actual
-    count distribution (or a supplied count_X matrix).
+def _decode_count_label(count_row):
+    """Decode a single 11-dim count dummy row back to a count label."""
+    count_row = np.asarray(count_row).ravel()
+    if count_row.size != len(COUNT_LABELS):
+        return "unknown"
+    if np.allclose(count_row, 0):
+        return "0-0"
+    return COUNT_LABELS[int(np.argmax(count_row))]
 
-    NOTE: The 0-0 reference count is the count BEFORE the PA-ending pitch,
-    so at 0-0 K and BB are literally impossible (need 3 strikes / 4 balls).
-    Marginalizing over counts gives realistic, interpretable rates.
+
+def _encode_count_row(count_label):
+    """Encode a count label (e.g., '3-1') into the 11-dummy count row."""
+    row = np.zeros(len(COUNT_LABELS), dtype=float)
+    if count_label != "0-0":
+        row[COUNT_LABELS.index(count_label)] = 1.0
+    return row
+
+
+def plot_baseline_probs(idata, count_X_train=None, example_data=None, example_idx=0, save_dir=None):
+    """
+    Posterior predicted outcome probabilities for one specific example PA
+    context (count + batter/pitcher features).
+
+    If `example_data` is not supplied, falls back to the legacy marginal
+    baseline plot using count averaging.
 
     Parameters
     ----------
@@ -277,12 +349,119 @@ def plot_baseline_probs(idata, count_X_train=None, save_dir=None):
     count_X_train: np.ndarray, shape (N, 11) or None
         Count dummy matrix from prepare_model_data. If None, the plot uses
         equal weights across the 11 non-reference count states (approximate).
+    example_data : dict or None
+        Output from prepare_model_data(...). If provided, a single row is used
+        to produce a specific prediction example for the plot.
+    example_idx  : int
+        Row index into example_data arrays (deterministic default = 0).
     save_dir     : str or None
     """
     post = idata.posterior
     alpha_draws    = post["alpha"].values.reshape(-1, 6)     # (S, 6)
     beta_count_draws = post["beta_count"].values.reshape(-1, 11, 6)  # (S, 11, 6)
+    beta_o_swing_draws = post["beta_o_swing"].values.reshape(-1, 6)
+    beta_zc_draws = post["beta_z_contact"].values.reshape(-1, 6)
+    beta_xiso_draws = post["beta_xiso"].values.reshape(-1, 6)
+    beta_xfip_draws = post["beta_xfip"].values.reshape(-1, 6)
     S = alpha_draws.shape[0]
+
+    # Preferred mode: one deterministic observed example
+    if example_data is not None:
+        n = int(example_data.get("N", 0))
+        if n <= 0:
+            raise ValueError("example_data was provided but has no rows (N <= 0)")
+        idx0 = int(example_idx) % n
+
+        count_row = np.asarray(example_data["count_X"][idx0], dtype=float)   # (11,)
+        o_swing = float(example_data["o_swing"][idx0])
+        z_contact = float(example_data["z_contact"][idx0])
+        xiso = float(example_data["xiso"][idx0])
+        xfip = float(example_data["xfip"][idx0])
+
+        draw_idx = np.random.default_rng(0).choice(S, size=min(800, S), replace=False)
+
+        def _predict_draw_probs_for_count(count_row_local):
+            per = np.empty((len(draw_idx), 7))
+            for i, s in enumerate(draw_idx):
+                lm = (
+                    alpha_draws[s]
+                    + count_row_local @ beta_count_draws[s]
+                    + o_swing * beta_o_swing_draws[s]
+                    + z_contact * beta_zc_draws[s]
+                    + xiso * beta_xiso_draws[s]
+                    + xfip * beta_xfip_draws[s]
+                )
+                lf = np.concatenate([lm[0:2], [0.0], lm[2:6]])
+                lf -= lf.max()
+                e = np.exp(lf)
+                per[i] = e / e.sum()
+            return per
+
+        per_draw_probs = _predict_draw_probs_for_count(count_row)
+
+        medians = np.median(per_draw_probs, axis=0)
+        lo = np.percentile(per_draw_probs, 3, axis=0)
+        hi = np.percentile(per_draw_probs, 97, axis=0)
+
+        count_label = _decode_count_label(count_row)
+
+        # Overlay alternate counts (same batter/pitcher features, count changed only)
+        overlay_specs = [("3-1", "#2ecc71", "o"), ("0-2", "#9b59b6", "s")]
+        overlay_medians = {}
+        for c_label, _, _ in overlay_specs:
+            overlay_medians[c_label] = np.median(
+                _predict_draw_probs_for_count(_encode_count_row(c_label)),
+                axis=0,
+            )
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        x = np.arange(7)
+        ax.bar(
+            x, medians, color="#F76900", alpha=0.8,
+            label=f"{count_label} count",
+        )
+        ax.errorbar(x, medians, yerr=[medians - lo, hi - medians],
+                    fmt="none", color="black", capsize=4, lw=1.5)
+        for c_label, color, marker in overlay_specs:
+            ax.plot(
+                x, overlay_medians[c_label],
+                color=color, marker=marker, linewidth=1.8, markersize=5,
+                label=f"{c_label} count",
+                zorder=4,
+            )
+        ax.set_xticks(x)
+        ax.set_xticklabels(OUTCOME_LABELS_7, fontsize=10)
+        ax.set_ylabel("Probability (%)")
+        ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=1))
+        title = "Posterior Outcome Probabilities with Hitter-Optimized Approach"
+
+        # If scalers are available, convert standardized values back to raw units for readability
+        subtitle = f"count={count_label} | example_idx={idx0}"
+        scalers = example_data.get("scalers")
+        if isinstance(scalers, dict):
+            try:
+                o_raw = o_swing * scalers["O-Swing_pct"]["std"] + scalers["O-Swing_pct"]["mean"]
+                zc_raw = z_contact * scalers["Z-Contact_pct"]["std"] + scalers["Z-Contact_pct"]["mean"]
+                xi_raw = xiso * scalers["xISO"]["std"] + scalers["xISO"]["mean"]
+                xf_raw = xfip * scalers["xFIP"]["std"] + scalers["xFIP"]["mean"]
+                subtitle = (
+                    f"O-Swing%: {o_raw:.1%} | Z-Contact%: {zc_raw:.1%} | "
+                    f"xISO: {xi_raw:.3f} | xFIP: {xf_raw:.2f}"
+                )
+            except Exception:
+                pass
+
+        ax.set_title(title, pad=34)
+        ax.text(
+            0.5, 1.07, subtitle,
+            transform=ax.transAxes,
+            ha="center", va="bottom",
+            fontsize=9,
+        )
+        ax.legend(loc="upper right", fontsize=8.5, frameon=True)
+        fig.tight_layout(rect=[0, 0, 1, 0.84])
+        _maybe_save(fig, save_dir, "baseline_probs.png")
+        return fig
 
     if count_X_train is not None:
         # Sample 2000 rows from training count distribution
@@ -314,14 +493,14 @@ def plot_baseline_probs(idata, count_X_train=None, save_dir=None):
 
     fig, ax = plt.subplots(figsize=(8, 4))
     x = np.arange(7)
-    ax.bar(x, medians, color="#4878d0", alpha=0.8)
+    ax.bar(x, medians, color="#F76900", alpha=0.8)
     ax.errorbar(x, medians, yerr=[medians - lo, hi - medians],
                 fmt="none", color="black", capsize=4, lw=1.5)
     ax.set_xticks(x)
     ax.set_xticklabels(OUTCOME_LABELS_7, fontsize=10)
     ax.set_ylabel("Probability (%)")
     src = "training count distribution" if count_X_train is not None else "uniform count weights"
-    ax.set_title(f"Predicted outcome probabilities\n(average batter & pitcher, {src}, posterior median + 94% HDI)")
+    ax.set_title(f"Posterior Outcome Probabilities with Hitter-Optimized Approach")
     ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=1))
     fig.tight_layout()
     _maybe_save(fig, save_dir, "baseline_probs.png")
@@ -359,7 +538,7 @@ def plot_divergences(idata, save_dir=None):
 # Convenience: run all plots
 # ---------------------------------------------------------------------------
 
-def plot_all(idata, count_X_train=None, save_dir=None, show=True):
+def plot_all(idata, count_X_train=None, example_data=None, save_dir=None, show=True):
     """
     Run every diagnostic plot. Pass save_dir to write PNGs to disk.
 
@@ -367,8 +546,10 @@ def plot_all(idata, count_X_train=None, save_dir=None, show=True):
     ----------
     idata        : az.InferenceData
     count_X_train: np.ndarray or None
-        count_X array from prepare_model_data, used to marginalize baseline_probs
-        over the real count distribution. Pass data["count_X"] for best results.
+        Legacy fallback input for baseline_probs when example_data is not passed.
+    example_data : dict or None
+        Output from prepare_model_data(...). Used to build a single-example
+        prediction plot for baseline_probs.png.
     save_dir     : str or None  — directory to save plots (created if absent)
     show         : bool         — call plt.show() after each figure
 
@@ -395,7 +576,7 @@ def plot_all(idata, count_X_train=None, save_dir=None, show=True):
 
     print("Generating: baseline_probs...")
     figs["baseline_probs"] = plot_baseline_probs(
-        idata, count_X_train=count_X_train, save_dir=save_dir
+        idata, count_X_train=count_X_train, example_data=example_data, save_dir=save_dir
     )
     if show:
         plt.show()
@@ -414,4 +595,10 @@ if __name__ == "__main__":
 
     idata = az.from_netcdf("Bayes Outcomes/bayes_outcome_model.nc")
     data  = prepare_model_data(data_dir="Data", years=[2025], subsample_frac=0.6)
-    plot_all(idata, count_X_train=data["count_X"], save_dir="Bayes Outcomes/plots", show=True)
+    plot_all(
+        idata,
+        count_X_train=data["count_X"],
+        example_data=data,
+        save_dir="Bayes Outcomes/plots",
+        show=True,
+    )
