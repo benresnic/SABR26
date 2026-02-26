@@ -1,4 +1,3 @@
-# Methodology README — HOA vs. WCA (SABR Diamond Dollars Case)
+**Optimizing Hitter Value Across Game States**
 
-## Project Overview
-
+#
