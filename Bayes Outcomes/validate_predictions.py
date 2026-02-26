@@ -91,7 +91,7 @@ def get_predictions_for_validation(pa_df, idata, scalers):
     return probs
 
 
-def plot_calibration(y_true, y_pred_probs, outcome_names, n_bins=10, save_path=None):
+def plot_calibration(y_true, y_pred_probs, outcome_names, n_bins=50, save_path=None):
     """
     Plot calibration curves for each outcome.
 
@@ -108,9 +108,9 @@ def plot_calibration(y_true, y_pred_probs, outcome_names, n_bins=10, save_path=N
 
         # Calibration curve
         try:
-            prob_true, prob_pred = calibration_curve(y_binary, y_prob, n_bins=n_bins, strategy='uniform')
+            prob_true, prob_pred = calibration_curve(y_binary, y_prob, n_bins=n_bins, strategy='quantile')
 
-            ax.plot(prob_pred, prob_true, "s-", label="Model")
+            ax.plot(prob_pred, prob_true, "s-", label="Model", color="#F76900")
             ax.plot([0, 1], [0, 1], "k--", label="Perfect")
 
             # Brier score
@@ -139,7 +139,7 @@ def plot_calibration(y_true, y_pred_probs, outcome_names, n_bins=10, save_path=N
     return fig
 
 
-def plot_predicted_vs_observed_by_bin(y_true, y_pred_probs, outcome_names, n_bins=10, save_path=None):
+def plot_predicted_vs_observed_by_bin(y_true, y_pred_probs, outcome_names, n_bins=250, save_path=None):
     """
     Bin predictions and compare mean predicted prob to observed frequency.
     """
@@ -151,8 +151,9 @@ def plot_predicted_vs_observed_by_bin(y_true, y_pred_probs, outcome_names, n_bin
         y_binary = (y_true == i).astype(int)
         y_prob = y_pred_probs[:, i]
 
-        # Bin by predicted probability
-        bins = np.linspace(0, y_prob.max() + 0.001, n_bins + 1)
+        # Bin by predicted probability (quantile-based for equal sample sizes)
+        bins = np.percentile(y_prob, np.linspace(0, 100, n_bins + 1))
+        bins[-1] += 0.001  # Ensure max value included
         bin_indices = np.digitize(y_prob, bins) - 1
         bin_indices = np.clip(bin_indices, 0, n_bins - 1)
 
@@ -215,8 +216,8 @@ def plot_outcome_distribution(y_true, y_pred_probs, outcome_names, save_path=Non
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    bars1 = ax.bar(x - width/2, obs_freq, width, label="Observed", color="steelblue")
-    bars2 = ax.bar(x + width/2, pred_freq, width, label="Predicted", color="coral")
+    bars1 = ax.bar(x - width/2, obs_freq, width, label="Observed", color="#000E54")
+    bars2 = ax.bar(x + width/2, pred_freq, width, label="Predicted", color="#F76900")
 
     ax.set_xlabel("Outcome")
     ax.set_ylabel("Frequency")
@@ -332,7 +333,7 @@ def run_validation(years=[2025], subsample_frac=0.2, save_plots=True):
 if __name__ == "__main__":
     metrics, y_true, pred_probs = run_validation(
         years=[2025],
-        subsample_frac=0.2,
+        subsample_frac=.2,
         save_plots=True,
     )
     plt.show()

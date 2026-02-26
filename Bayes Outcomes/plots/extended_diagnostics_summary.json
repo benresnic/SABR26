@@ -1,0 +1,176 @@
+{
+  "notes": {
+    "prior_sensitivity": "Not run by this script; requires fitting multiple models with alternative priors.",
+    "sbc": "Not run by this script; requires repeated simulation + refitting pipeline."
+  },
+  "bfmi": {
+    "bfmi_by_chain": [
+      0.9940568337917346,
+      1.0525783233356447,
+      0.9806328508247111,
+      1.0452309382450231
+    ]
+  },
+  "divergences": {
+    "n_divergent": 0,
+    "n_total": 3000
+  },
+  "approx_loo_waic_subset": {
+    "subset_n_obs": 4000,
+    "chains": 4,
+    "draws_per_chain": 100,
+    "elpd_loo": -5628.170361995697,
+    "p_loo": 1.1945786476135254,
+    "elpd_waic": -5628.158690460369,
+    "p_waic": 1.1829071044921875,
+    "pareto_k_gt_0_7": 0
+  },
+  "validation_subset": {
+    "n_pa_total": 9092,
+    "n_pa_valid_predictions": 9092,
+    "multiclass_log_loss": 1.4356639385223389,
+    "mean_brier_ovr": 0.09966917319791226,
+    "freq_l1_calibration": 0.010327136757104687
+  },
+  "subgroup_metrics": {
+    "count_group": {
+      "label": "By Count",
+      "rows": [
+        {
+          "group": "0-0",
+          "n": 9092,
+          "multiclass_log_loss": 1.4356639385223389,
+          "mean_brier_ovr": 0.09966917319791226,
+          "freq_l1_calibration": 0.010327136757104687
+        }
+      ]
+    },
+    "inning_bucket": {
+      "label": "By Inning Bucket",
+      "rows": [
+        {
+          "group": "1-3",
+          "n": 3068,
+          "multiclass_log_loss": 1.421341061592102,
+          "mean_brier_ovr": 0.09859769763353698,
+          "freq_l1_calibration": 0.023799293979910163
+        },
+        {
+          "group": "4-6",
+          "n": 3092,
+          "multiclass_log_loss": 1.4605275392532349,
+          "mean_brier_ovr": 0.10091247679160757,
+          "freq_l1_calibration": 0.030034012387700634
+        },
+        {
+          "group": "7+",
+          "n": 2932,
+          "multiclass_log_loss": 1.4244308471679688,
+          "mean_brier_ovr": 0.09947919786360036,
+          "freq_l1_calibration": 0.03085315504808887
+        }
+      ]
+    },
+    "score_diff_bucket": {
+      "label": "By Score Diff Bucket",
+      "rows": [
+        {
+          "group": "+0",
+          "n": 2477,
+          "multiclass_log_loss": 1.4155749082565308,
+          "mean_brier_ovr": 0.0987840987734538,
+          "freq_l1_calibration": 0.024944608819775876
+        },
+        {
+          "group": "+1",
+          "n": 1097,
+          "multiclass_log_loss": 1.4309265613555908,
+          "mean_brier_ovr": 0.09847811646614016,
+          "freq_l1_calibration": 0.04817812305551663
+        },
+        {
+          "group": "+2",
+          "n": 762,
+          "multiclass_log_loss": 1.5097870826721191,
+          "mean_brier_ovr": 0.10360079171393981,
+          "freq_l1_calibration": 0.09111500847864692
+        },
+        {
+          "group": "+3",
+          "n": 489,
+          "multiclass_log_loss": 1.4609777927398682,
+          "mean_brier_ovr": 0.10034959584424345,
+          "freq_l1_calibration": 0.05458839134082717
+        },
+        {
+          "group": "-1",
+          "n": 1145,
+          "multiclass_log_loss": 1.4276413917541504,
+          "mean_brier_ovr": 0.09961806861098073,
+          "freq_l1_calibration": 0.03410609320729287
+        },
+        {
+          "group": "-2",
+          "n": 722,
+          "multiclass_log_loss": 1.460591435432434,
+          "mean_brier_ovr": 0.10074539149271108,
+          "freq_l1_calibration": 0.06692928648321606
+        },
+        {
+          "group": "-3",
+          "n": 498,
+          "multiclass_log_loss": 1.4611119031906128,
+          "mean_brier_ovr": 0.10289356145489378,
+          "freq_l1_calibration": 0.08617219350667268
+        },
+        {
+          "group": "<=-4",
+          "n": 928,
+          "multiclass_log_loss": 1.4013175964355469,
+          "mean_brier_ovr": 0.09854366032804072,
+          "freq_l1_calibration": 0.03497428404456327
+        },
+        {
+          "group": ">=+4",
+          "n": 974,
+          "multiclass_log_loss": 1.4320555925369263,
+          "mean_brier_ovr": 0.0985300708727835,
+          "freq_l1_calibration": 0.04883207339655757
+        }
+      ]
+    },
+    "pitcher_quality_bucket": {
+      "label": "By Pitcher xFIP Quartile",
+      "rows": [
+        {
+          "group": "Q1 best",
+          "n": 2283,
+          "multiclass_log_loss": 1.4302687644958496,
+          "mean_brier_ovr": 0.10075711052146061,
+          "freq_l1_calibration": 0.030706891599015407
+        },
+        {
+          "group": "Q2",
+          "n": 2275,
+          "multiclass_log_loss": 1.4583837985992432,
+          "mean_brier_ovr": 0.10164415671710676,
+          "freq_l1_calibration": 0.047571658200307995
+        },
+        {
+          "group": "Q3",
+          "n": 2262,
+          "multiclass_log_loss": 1.3972091674804688,
+          "mean_brier_ovr": 0.09667200547349863,
+          "freq_l1_calibration": 0.06874628350897063
+        },
+        {
+          "group": "Q4 worst",
+          "n": 2271,
+          "multiclass_log_loss": 1.456933856010437,
+          "mean_brier_ovr": 0.09960382964099286,
+          "freq_l1_calibration": 0.037408385058259656
+        }
+      ]
+    }
+  }
+}
