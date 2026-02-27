@@ -372,7 +372,7 @@ def predict_outcome_probs(
 
 
 if __name__ == "__main__":
-    data = prepare_model_data(data_dir="Data", years=[2025], subsample_frac=0.5)
+    data = prepare_model_data(data_dir="Data", years=[2024], subsample_frac=0.5)
     with open("Bayes Outcomes/scalers.json", "w") as f:
         json.dump(data["scalers"], f)
     model = build_model(data)
